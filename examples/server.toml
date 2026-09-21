@@ -1,0 +1,18 @@
+# QuicProxy Server Configuration
+
+# Listening address for incoming QUIC connections (UDP)
+listen = "0.0.0.0:4433"
+
+# Pre-shared authentication key (must match client)
+auth_key = "change-this-to-a-strong-secret-key"
+
+# TLS Configuration:
+# By default, if tls_cert and tls_key are not provided, QuicProxy automatically
+# generates a self-signed TLS certificate on startup and displays its SHA-256 fingerprint!
+# To use your own certificate (e.g. Let's Encrypt / ACME):
+# tls_cert = "/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
+# tls_key = "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
+
+# Self-signed certificate options
+auto_cert = true
+auto_cert_domain = "localhost"
