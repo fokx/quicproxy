@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use quicproxy::client::run_client;
-use quicproxy::config::{ClientConfig, ServerConfig};
+use quicproxy::config::{ClientConfig, ServerConfig, TransportMode};
 use quicproxy::server::run_server;
 use quicproxy::tls::generate_self_signed;
 
@@ -87,6 +87,10 @@ struct ClientArgs {
     /// Pinned SHA-256 certificate fingerprint of the server
     #[arg(long)]
     cert_fingerprint: Option<String>,
+
+    /// Transport mode: auto, quic, or tcp
+    #[arg(long)]
+    transport: Option<TransportMode>,
 
     /// Custom CA certificate path
     #[arg(long)]
@@ -192,6 +196,7 @@ async fn main() -> Result<()> {
                         .auth_key
                         .clone()
                         .context("Auth key must be provided via --auth-key or config file")?,
+                    transport: args.transport.unwrap_or_default(),
                     server_name: args.sni.clone(),
                     insecure: args.insecure,
                     cert_fingerprint: args.cert_fingerprint.clone(),
@@ -212,6 +217,9 @@ async fn main() -> Result<()> {
             }
             if let Some(auth_key) = args.auth_key {
                 config.auth_key = auth_key;
+            }
+            if let Some(transport) = args.transport {
+                config.transport = transport;
             }
             if args.insecure {
                 config.insecure = true;

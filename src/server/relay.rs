@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use quinn::{RecvStream, SendStream};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -11,7 +11,11 @@ use crate::protocol::{
 
 const TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn handle_stream(mut send: SendStream, mut recv: RecvStream) -> Result<()> {
+pub async fn handle_stream<W, R>(mut send: W, mut recv: R) -> Result<()>
+where
+    W: AsyncWrite + AsyncWriteExt + Unpin + Send + 'static,
+    R: AsyncRead + AsyncReadExt + Unpin + Send + 'static,
+{
     let req = read_proxy_request(&mut recv)
         .await
         .context("Failed to read proxy request")?;
@@ -19,7 +23,7 @@ pub async fn handle_stream(mut send: SendStream, mut recv: RecvStream) -> Result
     if req.cmd != CMD_CONNECT {
         let resp = ProxyResponse::new(STATUS_UNSUPPORTED);
         let _ = write_proxy_response(&mut send, &resp).await;
-        let _ = send.finish();
+        let _ = send.shutdown().await;
         return Ok(());
     }
 
@@ -44,14 +48,14 @@ pub async fn handle_stream(mut send: SendStream, mut recv: RecvStream) -> Result
             tracing::warn!("Failed to connect to target {}: {}", req.target, err);
             let resp = ProxyResponse::new(STATUS_CONNECT_FAILED);
             let _ = write_proxy_response(&mut send, &resp).await;
-            let _ = send.finish();
+            let _ = send.shutdown().await;
             return Ok(());
         }
         Err(_) => {
             tracing::warn!("Timeout connecting to target {}", req.target);
             let resp = ProxyResponse::new(STATUS_CONNECT_FAILED);
             let _ = write_proxy_response(&mut send, &resp).await;
-            let _ = send.finish();
+            let _ = send.shutdown().await;
             return Ok(());
         }
     };
@@ -69,7 +73,7 @@ pub async fn handle_stream(mut send: SendStream, mut recv: RecvStream) -> Result
 
     let target_to_client = async {
         let res = tokio::io::copy(&mut tcp_read, &mut send).await;
-        let _ = send.finish();
+        let _ = send.shutdown().await;
         res
     };
 

@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
-use quinn::Connection;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -9,6 +9,7 @@ use crate::config::ClientConfig;
 use crate::protocol::{
     read_proxy_response, write_proxy_request, ProxyRequest, STATUS_SUCCESS, TargetAddr,
 };
+use crate::transport::ActiveTransport;
 
 const SOCKS_VERSION: u8 = 0x05;
 const METHOD_NO_AUTH: u8 = 0x00;
@@ -24,7 +25,7 @@ const REP_ADDR_NOT_SUPPORTED: u8 = 0x08;
 
 pub async fn run_socks5_listener(
     config: Arc<ClientConfig>,
-    conn_provider: Arc<dyn Fn() -> Option<Connection> + Send + Sync>,
+    conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync>,
 ) -> Result<()> {
     let listener = TcpListener::bind(config.socks5_listen)
         .await
@@ -54,7 +55,7 @@ async fn handle_socks5_client(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     config: Arc<ClientConfig>,
-    conn_provider: Arc<dyn Fn() -> Option<Connection> + Send + Sync>,
+    conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync>,
 ) -> Result<()> {
     let _ = stream.set_nodelay(true);
 
@@ -152,35 +153,41 @@ async fn handle_socks5_client(
 
     tracing::debug!("SOCKS5 CONNECT request for target {}", target);
 
-    // Obtain active QUIC connection
-    let quic_conn = match conn_provider() {
-        Some(conn) => conn,
-        None => {
-            tracing::warn!("No active QUIC connection available to handle SOCKS request");
+    // Obtain active transport (wait briefly if initial connection handshake is still completing)
+    let start_wait = std::time::Instant::now();
+    let transport = loop {
+        if let Some(t) = conn_provider() {
+            break t;
+        }
+        if start_wait.elapsed() > Duration::from_millis(1500) {
+            tracing::warn!("No active proxy transport available to handle SOCKS request");
             stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
-            bail!("QUIC connection not available");
+            bail!("Proxy transport not available");
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    };
+
+    // Open a new bidirectional stream on the active transport
+    let proxy_stream = match transport.open_stream().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to open stream on transport ({}): {}", transport.mode_name(), e);
+            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Err(e);
         }
     };
 
-    // Open a new bidirectional stream on the QUIC connection
-    let (mut quic_send, mut quic_recv) = match quic_conn.open_bi().await {
-        Ok(streams) => streams,
-        Err(e) => {
-            tracing::warn!("Failed to open QUIC stream: {}", e);
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
-            return Err(e.into());
-        }
-    };
+    let (mut stream_read, mut stream_write) = tokio::io::split(proxy_stream);
 
     // Send ProxyRequest
     let req = ProxyRequest::connect(target.clone());
-    if let Err(e) = write_proxy_request(&mut quic_send, &req).await {
+    if let Err(e) = write_proxy_request(&mut stream_write, &req).await {
         stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
         return Err(e);
     }
 
     // Read ProxyResponse from server
-    let resp = match read_proxy_response(&mut quic_recv).await {
+    let resp = match read_proxy_response(&mut stream_read).await {
         Ok(resp) => resp,
         Err(e) => {
             stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
@@ -200,19 +207,19 @@ async fn handle_socks5_client(
     // Bidirectional stream relay
     let (mut tcp_read, mut tcp_write) = stream.into_split();
 
-    let client_to_quic = async {
-        let res = tokio::io::copy(&mut tcp_read, &mut quic_send).await;
-        let _ = quic_send.finish();
+    let client_to_remote = async {
+        let res = tokio::io::copy(&mut tcp_read, &mut stream_write).await;
+        let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream_write).await;
         res
     };
 
-    let quic_to_client = async {
-        let res = tokio::io::copy(&mut quic_recv, &mut tcp_write).await;
+    let remote_to_client = async {
+        let res = tokio::io::copy(&mut stream_read, &mut tcp_write).await;
         let _ = tokio::io::AsyncWriteExt::shutdown(&mut tcp_write).await;
         res
     };
 
-    let _ = tokio::join!(client_to_quic, quic_to_client);
+    let _ = tokio::join!(client_to_remote, remote_to_client);
 
     tracing::trace!("SOCKS5 session finished for target {}", target);
     Ok(())

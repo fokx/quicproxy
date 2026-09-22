@@ -1,9 +1,11 @@
 pub mod connection;
 pub mod relay;
+pub mod tcp;
 
 use anyhow::{Context, Result};
 use quinn::Endpoint;
 use std::sync::Arc;
+use tokio::net::TcpListener;
 
 use crate::config::ServerConfig;
 use crate::tls::{
@@ -44,11 +46,18 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         .context("Failed to configure QUIC server TLS")?;
 
     let endpoint = Endpoint::server(server_crypto, config.listen)
-        .with_context(|| format!("Failed to bind QUIC server endpoint on {}", config.listen))?;
+        .with_context(|| format!("Failed to bind QUIC server endpoint on UDP {}", config.listen))?;
+
+    let tcp_listener = TcpListener::bind(config.listen)
+        .await
+        .with_context(|| format!("Failed to bind TCP fallback listener on TCP {}", config.listen))?;
 
     let local_addr = endpoint.local_addr()?;
+    let tcp_local_addr = tcp_listener.local_addr()?;
     println!("================================================================================");
-    println!("  QuicProxy Server is listening on UDP {}", local_addr);
+    println!("  QuicProxy Server is listening:");
+    println!("    - Primary QUIC: UDP {}", local_addr);
+    println!("    - Fallback TCP: TCP {}", tcp_local_addr);
     println!("  Certificate SHA-256 Fingerprint: {}", fingerprint_info);
     println!();
     println!("  Quick connect command for clients:");
@@ -62,20 +71,47 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     let auth_key = Arc::new(config.auth_key);
 
-    while let Some(incoming) = endpoint.accept().await {
-        let auth_key_clone = Arc::clone(&auth_key);
-        tokio::spawn(async move {
-            match incoming.await {
-                Ok(conn) => {
-                    if let Err(e) = connection::handle_connection(conn, auth_key_clone).await {
-                        tracing::debug!("Connection ended with: {:#}", e);
+    let auth_key_quic = Arc::clone(&auth_key);
+    let quic_task = async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let auth_key_clone = Arc::clone(&auth_key_quic);
+            tokio::spawn(async move {
+                match incoming.await {
+                    Ok(conn) => {
+                        if let Err(e) = connection::handle_connection(conn, auth_key_clone).await {
+                            tracing::debug!("QUIC connection ended with: {:#}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to establish incoming QUIC connection: {}", e);
                     }
                 }
+            });
+        }
+    };
+
+    let auth_key_tcp = Arc::clone(&auth_key);
+    let tcp_task = async move {
+        loop {
+            match tcp_listener.accept().await {
+                Ok((stream, _)) => {
+                    let auth_key_clone = Arc::clone(&auth_key_tcp);
+                    tokio::spawn(async move {
+                        if let Err(e) = tcp::handle_tcp_connection(stream, auth_key_clone).await {
+                            tracing::debug!("TCP fallback connection ended with: {:#}", e);
+                        }
+                    });
+                }
                 Err(e) => {
-                    tracing::warn!("Failed to establish incoming QUIC connection: {}", e);
+                    tracing::warn!("Failed to accept incoming TCP fallback connection: {}", e);
                 }
             }
-        });
+        }
+    };
+
+    tokio::select! {
+        _ = quic_task => {},
+        _ = tcp_task => {},
     }
 
     Ok(())

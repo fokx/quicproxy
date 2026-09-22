@@ -43,6 +43,41 @@ impl ServerConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportMode {
+    #[default]
+    Auto,
+    Quic,
+    Tcp,
+}
+
+impl std::str::FromStr for TransportMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Ok(TransportMode::Auto),
+            "quic" => Ok(TransportMode::Quic),
+            "tcp" => Ok(TransportMode::Tcp),
+            other => anyhow::bail!(
+                "Unknown transport mode '{}', expected 'auto', 'quic', or 'tcp'",
+                other
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for TransportMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransportMode::Auto => write!(f, "auto"),
+            TransportMode::Quic => write!(f, "quic"),
+            TransportMode::Tcp => write!(f, "tcp"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     #[serde(default = "default_socks5_listen")]
@@ -54,6 +89,9 @@ pub struct ClientConfig {
     pub server_port: u16,
 
     pub auth_key: String,
+
+    #[serde(default)]
+    pub transport: TransportMode,
 
     pub server_name: Option<String>,
 

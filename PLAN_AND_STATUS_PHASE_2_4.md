@@ -79,79 +79,39 @@ Phase 1 has been fully implemented, verified via automated test suites, document
 
 ---
 
-## 3. Phase 2 Implementation Plan: TCP Fallback & Multiplexing
+## 3. Phase 2: TCP Fallback & Multiplexing (Completed)
 
-### 3.1 The Problem: Avoiding "TLS-in-TLS"
-- **Why it matters**: When UDP is blocked or throttled by restrictive middleboxes/firewalls, proxy tools fall back to TCP.
-- **The pitfall**: Tunneling QUIC inside an outer TLS-over-TCP connection triggers DPI classifiers because the inner encrypted QUIC/TLS handshake and outer TLS record sizes exhibit unmistakable dual-handshake signatures ("TLS-in-TLS"). Furthermore, tunneling TCP-over-TCP causes congestion control meltdown.
-- **The solution**:
-  1. Do **not** encapsulate QUIC inside an outer TLS tunnel.
-  2. Implement an application-level **ChaCha20-Poly1305 encrypted framing protocol** over raw TCP, with an ephemeral X25519 Diffie-Hellman handshake.
-  3. Multiplex independent virtual streams over this single TCP connection using length-prefixed frames (`smux` pattern) to avoid opening a new TCP connection per SOCKS request.
+Phase 2 has been fully implemented, verified via automated test suites (4 new integration tests + 3 existing unit tests + 3 Phase 1 integration tests = 10/10 passed), and documented.
 
-### 3.2 TCP Fallback Protocol Design
+### 3.1 Architecture Highlights
+- **Zero TLS-in-TLS**: Uses raw TCP with ephemeral X25519 DH handshake + HKDF-SHA256 derivation instead of nesting TLS inside TLS.
+- **Two-Record ChaCha20-Poly1305 AEAD Framing**:
+  - Record 1: 2-byte encrypted frame length + 16B Poly1305 tag (18B).
+  - Record 2: Encrypted payload (`stream_id` [4B] + `frame_type` [1B] + payload) + 16B Poly1305 tag.
+  - Zero plaintext header or length leakage, completely opaque to DPI inspection.
+- **Smux-Style Virtual Stream Multiplexing**:
+  - `Stream 0`: Reserved for authentication handshake (`AuthRequest`/`AuthResponse`), cryptographically bound to the HKDF exporter secret.
+  - `Stream 1+`: Concurrent virtual bidirectional streams implementing standard Tokio `AsyncRead + AsyncWrite` with per-stream byte-level backpressure.
+- **Unified Transport Layer (`src/transport/`)**:
+  - `ProxyStream`: Abstracts QUIC bidirectional streams and TCP virtual streams.
+  - `ActiveTransport`: Manages connection lifecycle and stream opening uniformly.
+- **Server Dual-Listener & Client Auto-Fallback**:
+  - Server listens simultaneously on UDP and TCP on the configured port.
+  - Client defaults to `transport = "auto"`, attempting QUIC with 3-second timeout and seamlessly falling back to raw TCP ChaCha20-Poly1305 multiplexer when UDP is blocked.
+  - Background probe automatically upgrades connection back to QUIC when UDP connectivity is restored.
 
-```
-1. Ephemeral Handshake (Raw TCP):
-   Client -> Server: [32 bytes client_ephemeral_x25519_pubkey]
-   Server -> Client: [32 bytes server_ephemeral_x25519_pubkey]
-   Both derive shared secret via X25519 -> HKDF-SHA256 to produce:
-     - client_write_key (32B) + client_nonce_seq (u64)
-     - server_write_key (32B) + server_nonce_seq (u64)
-
-2. Multiplexed Framing:
-   Each frame:
-   [2 bytes encrypted_frame_len]   (ChaCha20-Poly1305 encrypted)
-   [frame payload]                 (ChaCha20-Poly1305 encrypted)
-     -> [4 bytes stream_id]
-     -> [1 byte frame_type (0x01=DATA, 0x02=FIN, 0x03=RST)]
-     -> [payload bytes]
-   [16 bytes Poly1305 AEAD tag]
-```
-
-- **Stream 0**: Reserved for control/authentication. After the X25519 exchange, the same `AuthRequest`/`AuthResponse` handshake executes over Stream 0, using the HKDF-derived secret as the exporter input.
-- **Stream 1+**: Virtual multiplexed streams. Each client SOCKS5 connection gets an atomically incremented odd stream ID.
-- Virtual streams implement `tokio::io::AsyncRead + AsyncWrite` via bounded `mpsc` channels and a background frame dispatcher.
-
-### 3.3 Unified Transport Abstraction (`src/transport/mod.rs`)
-
-```rust
-#[async_trait::async_trait]
-pub trait ProxyTransport: Send + Sync {
-    type Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static;
-
-    /// Open a new multiplexed bidirectional stream for a proxy request
-    async fn open_stream(&self) -> Result<Self::Stream>;
-
-    /// Check if transport is still healthy
-    fn is_alive(&self) -> bool;
-
-    /// Graceful shutdown
-    async fn close(&self) -> Result<()>;
-}
-```
-
-- `QuicTransport`: Wraps `quinn::Connection`, where `open_stream` calls `conn.open_bi()`.
-- `TcpTransport`: Wraps the ChaCha20-Poly1305 multiplexer, where `open_stream` allocates a new `stream_id` and channel pair.
-
-### 3.4 Client Transport Selector & Automatic Fallback
-- Config option `transport = "auto" | "quic" | "tcp"` (default: `"auto"`).
-- In `"auto"` mode:
-  1. Client launches QUIC connection attempt with a 3-second timeout.
-  2. If QUIC fails or times out (UDP blocked), automatically falls back to TCP transport.
-  3. Caches the working transport and periodically probes QUIC in the background to upgrade back when UDP becomes viable.
-- Support `--transport tcp` / `--transport quic` CLI overrides.
-
-### 3.5 Server Dual-Listener
-- Server binds both UDP (`quinn::Endpoint`) and TCP (`tokio::net::TcpListener`) on the configured port.
-- Accepts both incoming QUIC and incoming multiplexed TCP connections, feeding both into the common `relay::handle_stream` logic.
-
-### 3.6 Deliverables for Phase 2
-1. `src/transport/mod.rs` — Transport trait definition.
-2. `src/transport/quic.rs` — QUIC adapter.
-3. `src/transport/tcp.rs` — X25519 + ChaCha20-Poly1305 stream multiplexer.
-4. Update `src/client/mod.rs` & `src/server/mod.rs` to support dual-transport and auto fallback.
-5. Integration test `tests/tcp_fallback_test.rs` — test TCP fallback, multiplexing stress (many concurrent streams), and auto-switching when UDP is unavailable.
+### 3.2 Delivered Components
+1. `src/transport/mod.rs` — Unified `ProxyStream` and `ActiveTransport` abstractions.
+2. `src/transport/quic.rs` — `QuicTransport` adapter wrapping `quinn::Connection`.
+3. `src/transport/tcp.rs` — X25519 + ChaCha20-Poly1305 framing, `VirtualStream`, and `TcpMuxer`.
+4. `src/server/tcp.rs` — TCP fallback connection acceptor and stream dispatcher.
+5. Dual listener in `src/server/mod.rs` binding both UDP and TCP on `config.listen`.
+6. Transport selector (`auto`, `quic`, `tcp`) and auto-fallback with upgrade probing in `src/client/mod.rs` and `src/client/socks5.rs`.
+7. Full integration test suite in `tests/tcp_fallback_test.rs`:
+   - Direct TCP transport echo proxying.
+   - 25 concurrent streams multiplexing stress test.
+   - Automatic fallback when UDP is blocked.
+   - Authentication rejection on incorrect auth key over TCP.
 
 ---
 
