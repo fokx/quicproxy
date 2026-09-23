@@ -88,6 +88,10 @@ struct ServerArgs {
     /// Anti-probe jitter max in ms
     #[arg(long)]
     jitter_max: Option<u64>,
+
+    /// Inactivity timeout in seconds for UDP sessions
+    #[arg(long)]
+    udp_session_timeout: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -143,6 +147,14 @@ struct ClientArgs {
     /// Packet obfuscation key (Salamander)
     #[arg(long)]
     obfs_key: Option<String>,
+
+    /// TLS fingerprint profile: default, chrome, firefox
+    #[arg(long)]
+    tls_profile: Option<String>,
+
+    /// Comma-separated custom ALPN protocols (e.g. h3,h2)
+    #[arg(long)]
+    alpn: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -245,6 +257,10 @@ async fn main() -> Result<()> {
                 config.anti_probe = Some(ap);
             }
 
+            if let Some(timeout) = args.udp_session_timeout {
+                config.udp_session_timeout_secs = timeout;
+            }
+
             run_server(config).await?;
         }
         Commands::Client(args) => {
@@ -307,6 +323,17 @@ async fn main() -> Result<()> {
                     enabled: true,
                     key,
                 });
+            }
+
+            if args.tls_profile.is_some() || args.alpn.is_some() {
+                let mut fp = config.tls_fingerprint.unwrap_or_default();
+                if let Some(profile) = args.tls_profile {
+                    fp.cipher_profile = profile;
+                }
+                if let Some(alpn_str) = args.alpn {
+                    fp.alpn = alpn_str.split(',').map(|s| s.trim().to_string()).collect();
+                }
+                config.tls_fingerprint = Some(fp);
             }
 
             run_client(config).await?;

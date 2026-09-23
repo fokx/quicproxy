@@ -8,6 +8,7 @@ pub const PROTOCOL_VERSION: u8 = 0x01;
 pub const AUTH_TYPE_PSK: u8 = 0x01;
 
 pub const CMD_CONNECT: u8 = 0x01;
+pub const CMD_UDP_ASSOCIATE: u8 = 0x03;
 
 pub const STATUS_SUCCESS: u8 = 0x00;
 pub const STATUS_AUTH_FAILED: u8 = 0x01;
@@ -103,6 +104,107 @@ impl ProxyRequest {
             target,
             padding: generate_padding(16, 64),
         }
+    }
+
+    pub fn udp_associate(target: TargetAddr) -> Self {
+        Self {
+            cmd: CMD_UDP_ASSOCIATE,
+            target,
+            padding: generate_padding(16, 64),
+        }
+    }
+}
+
+/// A UDP datagram frame for transport over QUIC unreliable datagrams or TCP stream encapsulation.
+///
+/// Wire format:
+///   [4B session_id][1B atyp][addr bytes][2B port][payload]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UdpDatagram {
+    pub session_id: u32,
+    pub target: TargetAddr,
+    pub payload: Vec<u8>,
+}
+
+impl UdpDatagram {
+    /// Encode this datagram into a byte vector (synchronous, for atomic datagram delivery).
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64 + self.payload.len());
+        buf.extend_from_slice(&self.session_id.to_be_bytes());
+        // Encode target address inline
+        match &self.target {
+            TargetAddr::Ip(std::net::SocketAddr::V4(v4)) => {
+                buf.push(ATYP_IPV4);
+                buf.extend_from_slice(&v4.ip().octets());
+                buf.extend_from_slice(&v4.port().to_be_bytes());
+            }
+            TargetAddr::Ip(std::net::SocketAddr::V6(v6)) => {
+                buf.push(ATYP_IPV6);
+                buf.extend_from_slice(&v6.ip().octets());
+                buf.extend_from_slice(&v6.port().to_be_bytes());
+            }
+            TargetAddr::Domain(domain, port) => {
+                buf.push(ATYP_DOMAIN);
+                let domain_bytes = domain.as_bytes();
+                buf.push(domain_bytes.len() as u8);
+                buf.extend_from_slice(domain_bytes);
+                buf.extend_from_slice(&port.to_be_bytes());
+            }
+        }
+        buf.extend_from_slice(&self.payload);
+        buf
+    }
+
+    /// Decode a datagram from raw bytes (synchronous).
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        if data.len() < 8 {
+            bail!("UDP datagram too short: {} bytes", data.len());
+        }
+        let session_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        let atyp = data[4];
+        let (target, payload_offset) = match atyp {
+            ATYP_IPV4 => {
+                if data.len() < 4 + 1 + 4 + 2 {
+                    bail!("UDP datagram IPv4 too short");
+                }
+                let ip = Ipv4Addr::new(data[5], data[6], data[7], data[8]);
+                let port = u16::from_be_bytes([data[9], data[10]]);
+                (TargetAddr::Ip(SocketAddr::new(IpAddr::V4(ip), port)), 11)
+            }
+            ATYP_IPV6 => {
+                if data.len() < 4 + 1 + 16 + 2 {
+                    bail!("UDP datagram IPv6 too short");
+                }
+                let mut ip_bytes = [0u8; 16];
+                ip_bytes.copy_from_slice(&data[5..21]);
+                let port = u16::from_be_bytes([data[21], data[22]]);
+                (
+                    TargetAddr::Ip(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip_bytes)), port)),
+                    23,
+                )
+            }
+            ATYP_DOMAIN => {
+                if data.len() < 4 + 1 + 1 {
+                    bail!("UDP datagram domain too short");
+                }
+                let domain_len = data[5] as usize;
+                if data.len() < 4 + 1 + 1 + domain_len + 2 {
+                    bail!("UDP datagram domain data too short");
+                }
+                let domain = String::from_utf8(data[6..6 + domain_len].to_vec())
+                    .context("Invalid domain UTF-8 in UDP datagram")?;
+                let port_offset = 6 + domain_len;
+                let port = u16::from_be_bytes([data[port_offset], data[port_offset + 1]]);
+                (TargetAddr::Domain(domain, port), port_offset + 2)
+            }
+            _ => bail!("Unsupported address type in UDP datagram: 0x{:02x}", atyp),
+        };
+        let payload = data[payload_offset..].to_vec();
+        Ok(Self {
+            session_id,
+            target,
+            payload,
+        })
     }
 }
 

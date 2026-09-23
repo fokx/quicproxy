@@ -96,6 +96,8 @@ pub fn make_server_config(
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.max_concurrent_bidi_streams(256u32.into());
     transport.max_concurrent_uni_streams(256u32.into());
+    transport.datagram_receive_buffer_size(Some(2 * 1024 * 1024));
+    transport.datagram_send_buffer_size(2 * 1024 * 1024);
     server_config.transport_config(Arc::new(transport));
 
     Ok(server_config)
@@ -209,6 +211,16 @@ pub fn make_client_config(
     cert_fingerprint: Option<&str>,
     ca_cert_path: Option<&Path>,
 ) -> Result<quinn::ClientConfig> {
+    make_client_config_with_fingerprint(insecure, cert_fingerprint, ca_cert_path, None)
+}
+
+/// Create Quinn ClientConfig with given verification options and optional fingerprint config
+pub fn make_client_config_with_fingerprint(
+    insecure: bool,
+    cert_fingerprint: Option<&str>,
+    ca_cert_path: Option<&Path>,
+    tls_fingerprint: Option<&crate::tls_fingerprint::TlsFingerprintConfig>,
+) -> Result<quinn::ClientConfig> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let client_crypto = if insecure {
@@ -243,7 +255,11 @@ pub fn make_client_config(
     };
 
     let mut client_crypto = client_crypto;
-    client_crypto.alpn_protocols = vec![ALPN_QUIC.to_vec()];
+    if let Some(fp_cfg) = tls_fingerprint {
+        crate::tls_fingerprint::apply_fingerprint_config(&mut client_crypto, fp_cfg);
+    } else {
+        client_crypto.alpn_protocols = vec![ALPN_QUIC.to_vec()];
+    }
 
     let quinn_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
         .context("Failed to create QUIC client config")?;
@@ -254,6 +270,8 @@ pub fn make_client_config(
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.max_concurrent_bidi_streams(256u32.into());
     transport.max_concurrent_uni_streams(256u32.into());
+    transport.datagram_receive_buffer_size(Some(2 * 1024 * 1024));
+    transport.datagram_send_buffer_size(2 * 1024 * 1024);
     client_config.transport_config(Arc::new(transport));
 
     Ok(client_config)

@@ -24,6 +24,7 @@ use crate::protocol::{
 pub const FRAME_TYPE_DATA: u8 = 0x01;
 pub const FRAME_TYPE_FIN: u8 = 0x02;
 pub const FRAME_TYPE_RST: u8 = 0x03;
+pub const FRAME_TYPE_DATAGRAM: u8 = 0x04;
 
 pub const MAX_FRAME_PAYLOAD: usize = 16384;
 pub const MAX_STREAM_BUFFER: usize = 65536; // 64KB per-stream backpressure limit
@@ -353,12 +354,16 @@ async fn read_encrypted_frame(
     Ok((stream_id, frame_type, data))
 }
 
+/// Well-known stream ID used for datagram encapsulation over TCP fallback.
+pub const DATAGRAM_STREAM_ID: u32 = 0xFFFFFFFE;
+
 /// The multiplexer instance running over a single TCP connection.
 pub struct TcpMuxer {
     tx_sender: mpsc::UnboundedSender<MuxFrame>,
     streams: Arc<TokioMutex<HashMap<u32, mpsc::Sender<StreamEvent>>>>,
     next_stream_id: Arc<AtomicU32>,
     accept_rx: TokioMutex<mpsc::Receiver<VirtualStream>>,
+    datagram_rx: TokioMutex<mpsc::Receiver<Vec<u8>>>,
     is_alive: Arc<AtomicBool>,
 }
 
@@ -381,6 +386,7 @@ impl TcpMuxer {
 
         let (tx_sender, mut tx_receiver) = mpsc::unbounded_channel::<MuxFrame>();
         let (accept_tx, accept_rx) = mpsc::channel::<VirtualStream>(64);
+        let (datagram_tx, datagram_rx) = mpsc::channel::<Vec<u8>>(256);
 
         // Pre-allocate stream 0 for control/auth
         let (stream0_tx, stream0_rx) = mpsc::channel::<StreamEvent>(64);
@@ -431,6 +437,11 @@ impl TcpMuxer {
             loop {
                 match read_encrypted_frame(&mut reader, &mut opening_key).await {
                     Ok((stream_id, frame_type, data)) => {
+                        // Route datagrams to the dedicated channel
+                        if stream_id == DATAGRAM_STREAM_ID && frame_type == FRAME_TYPE_DATAGRAM {
+                            let _ = datagram_tx.send(data).await;
+                            continue;
+                        }
                         let mut map = streams_reader.lock().await;
                         if let Some(stream_tx) = map.get(&stream_id) {
                             let event = match frame_type {
@@ -472,6 +483,7 @@ impl TcpMuxer {
             streams,
             next_stream_id: Arc::new(AtomicU32::new(next_id)),
             accept_rx: TokioMutex::new(accept_rx),
+            datagram_rx: TokioMutex::new(datagram_rx),
             is_alive,
         };
 
@@ -508,6 +520,31 @@ impl TcpMuxer {
     pub async fn close(&self) -> Result<()> {
         self.is_alive.store(false, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Send a datagram over the TCP multiplexer using FRAME_TYPE_DATAGRAM.
+    pub fn send_datagram(&self, data: &[u8]) -> Result<()> {
+        if !self.is_alive() {
+            bail!("TCP multiplexer connection is closed");
+        }
+        let frame = MuxFrame {
+            stream_id: DATAGRAM_STREAM_ID,
+            frame_type: FRAME_TYPE_DATAGRAM,
+            payload: data.to_vec(),
+            in_flight: None,
+        };
+        self.tx_sender
+            .send(frame)
+            .map_err(|_| anyhow::anyhow!("TCP multiplexer datagram send failed"))?;
+        Ok(())
+    }
+
+    /// Receive a datagram from the TCP multiplexer's datagram channel.
+    pub async fn recv_datagram(&self) -> Result<Vec<u8>> {
+        let mut rx = self.datagram_rx.lock().await;
+        rx.recv()
+            .await
+            .context("TCP multiplexer datagram channel closed")
     }
 }
 
@@ -601,6 +638,14 @@ impl TcpTransport {
 
     pub async fn close(&self) -> Result<()> {
         self.muxer.close().await
+    }
+
+    pub fn send_datagram(&self, data: &[u8]) -> Result<()> {
+        self.muxer.send_datagram(data)
+    }
+
+    pub async fn recv_datagram(&self) -> Result<Vec<u8>> {
+        self.muxer.recv_datagram().await
     }
 }
 

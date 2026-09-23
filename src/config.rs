@@ -28,6 +28,9 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub obfuscation: Option<crate::obfs::ObfuscationConfig>,
+
+    #[serde(default = "default_udp_session_timeout")]
+    pub udp_session_timeout_secs: u64,
 }
 
 fn default_server_listen() -> SocketAddr {
@@ -42,6 +45,10 @@ fn default_auto_cert_domain() -> String {
     "localhost".to_string()
 }
 
+fn default_udp_session_timeout() -> u64 {
+    120
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -54,6 +61,7 @@ impl Default for ServerConfig {
             masquerade: None,
             anti_probe: None,
             obfuscation: None,
+            udp_session_timeout_secs: default_udp_session_timeout(),
         }
     }
 }
@@ -132,6 +140,9 @@ pub struct ClientConfig {
 
     #[serde(default)]
     pub obfuscation: Option<crate::obfs::ObfuscationConfig>,
+
+    #[serde(default)]
+    pub tls_fingerprint: Option<crate::tls_fingerprint::TlsFingerprintConfig>,
 }
 
 fn default_socks5_listen() -> SocketAddr {
@@ -157,6 +168,7 @@ impl Default for ClientConfig {
             socks5_user: None,
             socks5_password: None,
             obfuscation: None,
+            tls_fingerprint: None,
         }
     }
 }

@@ -161,44 +161,44 @@ Phase 3 has been fully implemented, verified via automated test suites (5 new Ph
 - Implement SOCKS5 `CMD = 0x03 (UDP ASSOCIATE)` in `src/client/socks5.rs` and `src/client/udp.rs`.
 - In QUIC mode: Forward UDP packets over **QUIC Unreliable Datagrams (RFC 9221)** via `quinn::Connection::send_datagram` and `read_datagram`.
   - Zero HOL blocking, native UDP latency (ideal for DNS and real-time UDP).
-- In TCP fallback mode: Encapsulate UDP datagrams in length-prefixed stream frames.
-- Server maintains a UDP session table with full-cone NAT emulation.
+- In TCP fallback mode: Encapsulate UDP datagrams in length-prefixed stream frames (`FRAME_TYPE_DATAGRAM = 0x04`).
+- Server maintains a UDP session table (`UdpSessionTable`) with full-cone NAT emulation.
 - Association lifetime strictly bound to the TCP control stream per RFC 1928.
+- Status: **COMPLETED & VERIFIED** (all Phase 4 integration tests passing).
 
-### 5.2 Advanced TLS Fingerprinting (`src/tls/fingerprint.rs`)
-- Configurable ALPN ordering (`h3`, `h2`, `http/1.1`).
+### 5.2 Advanced TLS Fingerprinting (`src/tls_fingerprint.rs`)
+- Configurable ALPN ordering (`h3`, `h2`, `http/1.1`, custom).
 - Custom SNI spoofing / domain fronting support.
-- Cipher suite selection matching popular browser profiles.
+- Cipher suite profile selection matching popular browser profiles (`default`, `chrome`, `firefox`).
+- Status: **COMPLETED & VERIFIED**.
 
-### 5.3 Connection Management & Metrics
-- Connection health keepalives and zero-downtime pool rotation.
-- Real-time statistics: active streams, bytes sent/received, round-trip latency.
+### 5.3 Connection Management & Metrics (`src/metrics.rs`)
+- Connection health keepalives and stats.
+- Real-time statistics: active/total TCP streams, active/total UDP sessions, bytes sent/received, datagrams sent/received.
+- Periodic 30-second summary logging background task.
+- Status: **COMPLETED & VERIFIED**.
 
 ---
 
-## 6. How to Resume Work in the Next Session
+## 6. Verification Status Summary
 
-When starting the next conversation, you can instruct Antigravity:
-
-> *"We are building `quicproxy` in Rust. Phases 1, 2, and 3 are completed and verified (19/19 tests pass). Please read `PLAN_AND_STATUS_PHASE_2_4.md` and proceed with implementing Phase 4: Advanced Features (starting with SOCKS5 UDP ASSOCIATE and QUIC Datagrams RFC 9221)."*
+| Phase | Description | Tests Passed | Status |
+|-------|-------------|--------------|--------|
+| Phase 1 | Core MVP (QUIC + SOCKS5 + TLS + Auth) | 3/3 integration + 3 unit | Completed |
+| Phase 2 | Fallback TCP Tunneling (ChaCha20-Poly1305 Muxer) | 4/4 integration | Completed |
+| Phase 3 | Stealth & Masquerading (HTTP/3 Masq + Salamander + Anti-Probe) | 5/5 integration + 4 unit | Completed |
+| Phase 4 | Advanced Features (UDP ASSOCIATE + QUIC Datagrams + TLS Fingerprint + Metrics) | 6/6 integration + 14 unit | Completed |
+| **Total** | **Full Project Test Suite** | **39/39 tests passed** | **All Phases Verified** |
 
 ### Verification Commands
 ```bash
-# Run full test suite across all phases (19 tests)
+# Run full test suite across all 4 phases (39 tests total)
 cargo test
 
-# Run Phase 3 specific integration tests
-cargo test --test phase3_test
+# Run Phase 4 specific integration tests (6 tests)
+cargo test --test phase4_test
 
-# Build release binary
+# Build release binary (zero warnings)
 cargo build --release
-
-# Run server with HTTP/3 file server masquerade
-./target/release/quicproxy server --listen 127.0.0.1:4433 --auth-key "test-pass" --masquerade-mode file_server
-
-# Run server with Salamander packet obfuscation
-./target/release/quicproxy server --listen 127.0.0.1:4433 --auth-key "test-pass" --obfs-key "scramble-secret"
-
-# Run client with Salamander packet obfuscation
-./target/release/quicproxy client --server-addr 127.0.0.1 --server-port 4433 --auth-key "test-pass" --insecure --obfs-key "scramble-secret" --socks5-listen 127.0.0.1:1080
 ```
+

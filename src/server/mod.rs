@@ -3,6 +3,7 @@ pub mod connection;
 pub mod masquerade;
 pub mod relay;
 pub mod tcp;
+pub mod udp_session;
 
 use anyhow::{bail, Context, Result};
 use quinn::Endpoint;
@@ -100,6 +101,9 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     );
     println!("================================================================================");
 
+    let metrics = Arc::new(crate::metrics::Metrics::new());
+    Arc::clone(&metrics).start_periodic_logging();
+
     let auth_key = Arc::new(config.auth_key);
     let masquerade = Arc::new(masquerade::MasqueradeHandler::new(masq_config));
 
@@ -114,6 +118,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     let masquerade_quic = Arc::clone(&masquerade);
     let rate_limiter_quic = Arc::clone(&rate_limiter);
     let anti_probe_quic = Arc::clone(&anti_probe);
+    let udp_timeout = config.udp_session_timeout_secs;
 
     let quic_task = async move {
         while let Some(incoming) = endpoint.accept().await {
@@ -131,6 +136,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
                             masq_clone,
                             rate_limiter_clone,
                             anti_probe_clone,
+                            udp_timeout,
                         )
                         .await
                         {
@@ -148,6 +154,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     let auth_key_tcp = Arc::clone(&auth_key);
     let rate_limiter_tcp = Arc::clone(&rate_limiter);
     let anti_probe_tcp = Arc::clone(&anti_probe);
+    let udp_timeout_tcp = config.udp_session_timeout_secs;
 
     let tcp_task = async move {
         loop {
@@ -163,6 +170,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
                             auth_key_clone,
                             rate_limiter_clone,
                             anti_probe_clone,
+                            udp_timeout_tcp,
                         )
                         .await
                         {

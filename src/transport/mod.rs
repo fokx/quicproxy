@@ -94,4 +94,30 @@ impl ActiveTransport {
             ActiveTransport::Tcp(_) => "TCP",
         }
     }
+
+    /// Send an unreliable datagram over the proxy tunnel.
+    /// In QUIC mode: uses RFC 9221 unreliable datagrams (zero HOL blocking).
+    /// In TCP mode: sends length-prefixed datagram over the TCP muxer's datagram channel.
+    pub fn send_datagram(&self, data: &[u8]) -> Result<()> {
+        match self {
+            ActiveTransport::Quic(t) => t.send_datagram(data),
+            ActiveTransport::Tcp(t) => t.send_datagram(data),
+        }
+    }
+
+    /// Receive an unreliable datagram from the proxy tunnel.
+    pub async fn recv_datagram(&self) -> Result<Vec<u8>> {
+        match self {
+            ActiveTransport::Quic(t) => t.recv_datagram().await,
+            ActiveTransport::Tcp(t) => t.recv_datagram().await,
+        }
+    }
+
+    /// Get the underlying QUIC connection reference (for datagram APIs). Returns None if TCP.
+    pub fn quic_connection(&self) -> Option<&quinn::Connection> {
+        match self {
+            ActiveTransport::Quic(t) => Some(t.connection()),
+            ActiveTransport::Tcp(_) => None,
+        }
+    }
 }

@@ -17,6 +17,7 @@ pub async fn handle_connection(
     masquerade: Arc<MasqueradeHandler>,
     rate_limiter: Arc<RateLimiter>,
     anti_probe: Arc<AntiProbeConfig>,
+    udp_session_timeout: u64,
 ) -> Result<()> {
     let remote_addr = conn.remote_address();
     tracing::info!("Accepted incoming QUIC connection from {}", remote_addr);
@@ -104,6 +105,52 @@ pub async fn handle_connection(
     let _ = auth_send.finish();
 
     tracing::info!("Client {} successfully authenticated", remote_addr);
+
+    // Set up UDP session table and datagram receiver loop for this connection
+    let session_table = std::sync::Arc::new(
+        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout),
+    );
+
+    // Spawn datagram receiver loop
+    let conn_dgram = conn.clone();
+    let session_table_dgram = session_table.clone();
+    tokio::spawn(async move {
+        loop {
+            match conn_dgram.read_datagram().await {
+                Ok(dgram_bytes) => {
+                    match crate::protocol::UdpDatagram::decode(&dgram_bytes) {
+                        Ok(dgram) => {
+                            let conn_for_send = conn_dgram.clone();
+                            if let Err(e) = session_table_dgram
+                                .handle_outbound(
+                                    dgram.session_id,
+                                    dgram.target,
+                                    &dgram.payload,
+                                    move |b| conn_for_send.send_datagram(b).map_err(|e| e.to_string()),
+                                )
+                                .await
+                            {
+                                tracing::debug!("UDP session outbound error: {:#}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("Failed to decode UDP datagram: {:#}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("Datagram receiver loop ended: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Spawn session table reaper
+    let session_table_reaper = session_table.clone();
+    tokio::spawn(async move {
+        session_table_reaper.reaper_loop().await;
+    });
 
     // Accept subsequent proxy streams
     loop {

@@ -17,15 +17,19 @@ const METHOD_USER_PASS: u8 = 0x02;
 const METHOD_NO_ACCEPTABLE: u8 = 0xFF;
 
 const CMD_CONNECT: u8 = 0x01;
+const CMD_UDP_ASSOCIATE: u8 = 0x03;
 
 const REP_SUCCESS: u8 = 0x00;
 const REP_GENERAL_FAILURE: u8 = 0x01;
 const REP_CMD_NOT_SUPPORTED: u8 = 0x07;
 const REP_ADDR_NOT_SUPPORTED: u8 = 0x08;
 
+static NEXT_UDP_SESSION_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 pub async fn run_socks5_listener(
     config: Arc<ClientConfig>,
     conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync>,
+    datagram_router: Arc<crate::client::udp::DatagramRouter>,
 ) -> Result<()> {
     let listener = TcpListener::bind(config.socks5_listen)
         .await
@@ -38,8 +42,9 @@ pub async fn run_socks5_listener(
             Ok((stream, client_addr)) => {
                 let config_clone = Arc::clone(&config);
                 let conn_provider_clone = Arc::clone(&conn_provider);
+                let router_clone = Arc::clone(&datagram_router);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_socks5_client(stream, client_addr, config_clone, conn_provider_clone).await {
+                    if let Err(e) = handle_socks5_client(stream, client_addr, config_clone, conn_provider_clone, router_clone).await {
                         tracing::debug!("SOCKS5 client {} error: {:#}", client_addr, e);
                     }
                 });
@@ -56,6 +61,7 @@ async fn handle_socks5_client(
     client_addr: SocketAddr,
     config: Arc<ClientConfig>,
     conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync>,
+    datagram_router: Arc<crate::client::udp::DatagramRouter>,
 ) -> Result<()> {
     let _ = stream.set_nodelay(true);
 
@@ -118,7 +124,7 @@ async fn handle_socks5_client(
     let _rsv = stream.read_u8().await.context("Failed to read RSV")?;
     let atyp = stream.read_u8().await.context("Failed to read ATYP")?;
 
-    if cmd != CMD_CONNECT {
+    if cmd != CMD_CONNECT && cmd != CMD_UDP_ASSOCIATE {
         // Reply with command not supported
         stream.write_all(&[SOCKS_VERSION, REP_CMD_NOT_SUPPORTED, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
         bail!("Unsupported SOCKS command: 0x{:02x}", cmd);
@@ -151,21 +157,114 @@ async fn handle_socks5_client(
         }
     };
 
-    tracing::debug!("SOCKS5 CONNECT request for target {}", target);
-
     // Obtain active transport (wait briefly if initial connection handshake is still completing)
     let start_wait = std::time::Instant::now();
     let transport = loop {
         if let Some(t) = conn_provider() {
             break t;
         }
-        if start_wait.elapsed() > Duration::from_millis(1500) {
+        if start_wait.elapsed() > Duration::from_millis(6000) {
             tracing::warn!("No active proxy transport available to handle SOCKS request");
             stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
             bail!("Proxy transport not available");
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     };
+
+    if cmd == CMD_UDP_ASSOCIATE {
+        tracing::debug!("SOCKS5 UDP ASSOCIATE request from {} for {}", client_addr, target);
+
+        let session_id = NEXT_UDP_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let incoming_rx = datagram_router.register(session_id);
+
+        let udp_bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let relay = match crate::client::udp::UdpRelay::new(session_id, udp_bind_addr, incoming_rx).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Failed to bind client UDP relay socket: {}", e);
+                datagram_router.deregister(session_id);
+                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                return Err(e);
+            }
+        };
+
+        let relay_bound_addr = relay.local_addr()?;
+        let relay = Arc::new(relay);
+
+        // Open a control stream to the server for this UDP association
+        let proxy_stream = match transport.open_stream().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to open control stream on transport: {}", e);
+                datagram_router.deregister(session_id);
+                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                return Err(e);
+            }
+        };
+
+        let (mut stream_read, mut stream_write) = tokio::io::split(proxy_stream);
+        let req = ProxyRequest::udp_associate(target.clone());
+        if let Err(e) = write_proxy_request(&mut stream_write, &req).await {
+            datagram_router.deregister(session_id);
+            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Err(e);
+        }
+
+        let resp = match read_proxy_response(&mut stream_read).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                datagram_router.deregister(session_id);
+                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                return Err(e);
+            }
+        };
+
+        if resp.status != STATUS_SUCCESS {
+            datagram_router.deregister(session_id);
+            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Ok(());
+        }
+
+        // Send success reply to SOCKS5 client containing bound UDP relay address
+        let mut reply = vec![SOCKS_VERSION, REP_SUCCESS, 0x00];
+        match relay_bound_addr {
+            SocketAddr::V4(v4) => {
+                reply.push(0x01); // ATYP IPv4
+                reply.extend_from_slice(&v4.ip().octets());
+                reply.extend_from_slice(&v4.port().to_be_bytes());
+            }
+            SocketAddr::V6(v6) => {
+                reply.push(0x04); // ATYP IPv6
+                reply.extend_from_slice(&v6.ip().octets());
+                reply.extend_from_slice(&v6.port().to_be_bytes());
+            }
+        }
+        stream.write_all(&reply).await?;
+
+        // Spawn UDP relay tasks
+        let relay_c2s = Arc::clone(&relay);
+        let transport_c2s = Arc::clone(&transport);
+        let c2s_handle = tokio::spawn(async move {
+            let _ = relay_c2s.run_client_to_server(transport_c2s).await;
+        });
+
+        let relay_s2c = Arc::clone(&relay);
+        let s2c_handle = tokio::spawn(async move {
+            let _ = relay_s2c.run_server_to_client().await;
+        });
+
+        // RFC 1928: The UDP association terminates when the TCP control connection terminates
+        let mut eof_buf = [0u8; 1];
+        let _ = stream.read(&mut eof_buf).await;
+
+        c2s_handle.abort();
+        s2c_handle.abort();
+        datagram_router.deregister(session_id);
+        tracing::debug!("SOCKS5 UDP ASSOCIATE session {} terminated", session_id);
+        return Ok(());
+    }
+
+    tracing::debug!("SOCKS5 CONNECT request for target {}", target);
 
     // Open a new bidirectional stream on the active transport
     let proxy_stream = match transport.open_stream().await {

@@ -1,4 +1,5 @@
 pub mod socks5;
+pub mod udp;
 
 use anyhow::{bail, Context, Result};
 use quinn::{Connection, Endpoint};
@@ -14,7 +15,6 @@ use crate::config::{ClientConfig, TransportMode};
 use crate::protocol::{
     read_auth_response, write_auth_request, AuthRequest, STATUS_SUCCESS,
 };
-use crate::tls::make_client_config;
 use crate::transport::quic::QuicTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::ActiveTransport;
@@ -23,13 +23,19 @@ pub async fn run_client(config: ClientConfig) -> Result<()> {
     let active_transport = Arc::new(RwLock::new(None::<Arc<ActiveTransport>>));
     let active_transport_clone = Arc::clone(&active_transport);
 
+    let datagram_router = Arc::new(crate::client::udp::DatagramRouter::new());
+    let datagram_router_clone = Arc::clone(&datagram_router);
+
     let config = Arc::new(config);
     let config_clone = Arc::clone(&config);
 
     // Start background connection manager loop
     tokio::spawn(async move {
-        connection_manager_loop(config_clone, active_transport_clone).await;
+        connection_manager_loop(config_clone, active_transport_clone, datagram_router_clone).await;
     });
+
+    let metrics = Arc::new(crate::metrics::Metrics::new());
+    Arc::clone(&metrics).start_periodic_logging();
 
     println!("================================================================================");
     println!("  QuicProxy Client is starting...");
@@ -48,14 +54,15 @@ pub async fn run_client(config: ClientConfig) -> Result<()> {
             guard.as_ref().filter(|t| t.is_alive()).cloned()
         });
 
-    socks5::run_socks5_listener(config, conn_provider).await
+    socks5::run_socks5_listener(config, conn_provider, datagram_router).await
 }
 
 async fn create_quic_endpoint(config: &ClientConfig) -> Result<Endpoint> {
-    let client_crypto = make_client_config(
+    let client_crypto = crate::tls::make_client_config_with_fingerprint(
         config.insecure,
         config.cert_fingerprint.as_deref(),
         config.ca_cert.as_deref(),
+        config.tls_fingerprint.as_ref(),
     )?;
 
     let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
@@ -83,11 +90,13 @@ async fn create_quic_endpoint(config: &ClientConfig) -> Result<Endpoint> {
 async fn connection_manager_loop(
     config: Arc<ClientConfig>,
     active_transport: Arc<RwLock<Option<Arc<ActiveTransport>>>>,
+    datagram_router: Arc<crate::client::udp::DatagramRouter>,
 ) {
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(10);
 
     let quic_endpoint = create_quic_endpoint(&config).await.ok();
+    let mut current_dgram_task: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
         let is_connected = {
@@ -100,6 +109,10 @@ async fn connection_manager_loop(
         };
 
         if !is_connected {
+            if let Some(h) = current_dgram_task.take() {
+                h.abort();
+            }
+
             tracing::info!(
                 "Attempting connection to {}:{} (mode: {})...",
                 config.server_addr,
@@ -156,14 +169,22 @@ async fn connection_manager_loop(
                     }
                     backoff = Duration::from_secs(1);
 
+                    // Spawn datagram receiver loop for incoming UDP datagrams
+                    let router_recv = Arc::clone(&datagram_router);
+                    let transport_recv = Arc::clone(&transport_arc);
+                    current_dgram_task = Some(tokio::spawn(async move {
+                        router_recv.recv_and_route_loop(transport_recv).await;
+                    }));
+
                     // If connected via TCP in Auto mode, spawn background probe to upgrade to QUIC
                     if config.transport == TransportMode::Auto && mode_name == "TCP" {
                         if let Some(ref ep) = quic_endpoint {
                             let ep_clone = ep.clone();
                             let config_probe = Arc::clone(&config);
                             let active_probe = Arc::clone(&active_transport);
+                            let router_probe = Arc::clone(&datagram_router);
                             tokio::spawn(async move {
-                                probe_quic_upgrade(ep_clone, config_probe, active_probe).await;
+                                probe_quic_upgrade(ep_clone, config_probe, active_probe, router_probe).await;
                             });
                         }
                     }
@@ -185,6 +206,7 @@ async fn probe_quic_upgrade(
     endpoint: Endpoint,
     config: Arc<ClientConfig>,
     active_transport: Arc<RwLock<Option<Arc<ActiveTransport>>>>,
+    datagram_router: Arc<crate::client::udp::DatagramRouter>,
 ) {
     loop {
         sleep(Duration::from_secs(15)).await;
@@ -206,8 +228,16 @@ async fn probe_quic_upgrade(
         match timeout(Duration::from_secs(3), connect_quic(&endpoint, &config)).await {
             Ok(Ok(quic_transport)) => {
                 tracing::info!("QUIC transport probed successfully! Upgrading active transport to QUIC...");
-                let mut guard = active_transport.write().await;
-                *guard = Some(Arc::new(quic_transport));
+                let quic_arc = Arc::new(quic_transport);
+                {
+                    let mut guard = active_transport.write().await;
+                    *guard = Some(Arc::clone(&quic_arc));
+                }
+                // Spawn new datagram receiver loop for QUIC transport
+                let router_recv = Arc::clone(&datagram_router);
+                tokio::spawn(async move {
+                    router_recv.recv_and_route_loop(quic_arc).await;
+                });
                 break;
             }
             _ => {
