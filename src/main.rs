@@ -155,6 +155,18 @@ struct ClientArgs {
     /// Comma-separated custom ALPN protocols (e.g. h3,h2)
     #[arg(long)]
     alpn: Option<String>,
+
+    /// Multi-server traffic mode: aggregation or resilient
+    #[arg(long)]
+    traffic_mode: Option<quicproxy::config::TrafficMode>,
+
+    /// Aggregation strategy: round_robin or random
+    #[arg(long)]
+    strategy: Option<quicproxy::config::AggregationStrategy>,
+
+    /// Outbound relay server anchor name or address
+    #[arg(long)]
+    relay_to_server: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -267,73 +279,78 @@ async fn main() -> Result<()> {
             let mut config = if let Some(config_path) = args.config {
                 ClientConfig::from_file(config_path)?
             } else {
-                ClientConfig {
-                    socks5_listen: args
-                        .socks5_listen
-                        .unwrap_or_else(|| "127.0.0.1:1080".parse().unwrap()),
-                    server_addr: args
-                        .server_addr
-                        .clone()
-                        .context("Server address must be provided via --server-addr or config file")?,
+                let server_addr = args
+                    .server_addr
+                    .clone()
+                    .context("Server address must be provided via --server-addr or config file")?;
+                let auth_key = args
+                    .auth_key
+                    .clone()
+                    .context("Auth key must be provided via --auth-key or config file")?;
+
+                let obfuscation = args.obfs_key.map(|key| quicproxy::obfs::ObfuscationConfig {
+                    enabled: true,
+                    key,
+                });
+
+                let tls_fingerprint = if args.tls_profile.is_some() || args.alpn.is_some() {
+                    let mut fp = quicproxy::tls_fingerprint::TlsFingerprintConfig::default();
+                    if let Some(profile) = args.tls_profile {
+                        fp.cipher_profile = profile;
+                    }
+                    if let Some(alpn_str) = args.alpn {
+                        fp.alpn = alpn_str.split(',').map(|s| s.trim().to_string()).collect();
+                    }
+                    Some(fp)
+                } else {
+                    None
+                };
+
+                let node = quicproxy::config::ServerNodeConfig {
+                    name: "default".to_string(),
+                    server_addr,
                     server_port: args.server_port.unwrap_or(4433),
-                    auth_key: args
-                        .auth_key
-                        .clone()
-                        .context("Auth key must be provided via --auth-key or config file")?,
+                    auth_key,
                     transport: args.transport.unwrap_or_default(),
-                    server_name: args.sni.clone(),
+                    server_name: args.sni,
                     insecure: args.insecure,
-                    cert_fingerprint: args.cert_fingerprint.clone(),
-                    ca_cert: args.ca_cert.clone(),
-                    socks5_user: args.socks5_user.clone(),
-                    socks5_password: args.socks5_password.clone(),
-                    ..Default::default()
+                    cert_fingerprint: args.cert_fingerprint,
+                    ca_cert: args.ca_cert,
+                    weight: 1,
+                    priority: 1,
+                    obfuscation,
+                    tls_fingerprint,
+                };
+
+                let socks5_listen = args
+                    .socks5_listen
+                    .unwrap_or_else(|| "127.0.0.1:1080".parse().unwrap());
+
+                ClientConfig {
+                    socks5_listen,
+                    servers: vec![node],
+                    routing: quicproxy::config::MultiServerRoutingConfig {
+                        mode: args.traffic_mode.unwrap_or_default(),
+                        strategy: args.strategy.unwrap_or_default(),
+                        relay_to_server: args.relay_to_server.clone(),
+                        relay_fallback_direct: true,
+                    },
+                    socks5_user: args.socks5_user,
+                    socks5_password: args.socks5_password,
                 }
             };
 
             if let Some(listen) = args.socks5_listen {
                 config.socks5_listen = listen;
             }
-            if let Some(addr) = args.server_addr {
-                config.server_addr = addr;
+            if let Some(mode) = args.traffic_mode {
+                config.routing.mode = mode;
             }
-            if let Some(port) = args.server_port {
-                config.server_port = port;
+            if let Some(strat) = args.strategy {
+                config.routing.strategy = strat;
             }
-            if let Some(auth_key) = args.auth_key {
-                config.auth_key = auth_key;
-            }
-            if let Some(transport) = args.transport {
-                config.transport = transport;
-            }
-            if args.insecure {
-                config.insecure = true;
-            }
-            if let Some(cert_fp) = args.cert_fingerprint {
-                config.cert_fingerprint = Some(cert_fp);
-            }
-            if let Some(ca_cert) = args.ca_cert {
-                config.ca_cert = Some(ca_cert);
-            }
-            if let Some(sni) = args.sni {
-                config.server_name = Some(sni);
-            }
-            if let Some(key) = args.obfs_key {
-                config.obfuscation = Some(quicproxy::obfs::ObfuscationConfig {
-                    enabled: true,
-                    key,
-                });
-            }
-
-            if args.tls_profile.is_some() || args.alpn.is_some() {
-                let mut fp = config.tls_fingerprint.unwrap_or_default();
-                if let Some(profile) = args.tls_profile {
-                    fp.cipher_profile = profile;
-                }
-                if let Some(alpn_str) = args.alpn {
-                    fp.alpn = alpn_str.split(',').map(|s| s.trim().to_string()).collect();
-                }
-                config.tls_fingerprint = Some(fp);
+            if let Some(relay) = args.relay_to_server {
+                config.routing.relay_to_server = Some(relay);
             }
 
             run_client(config).await?;

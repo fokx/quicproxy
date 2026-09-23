@@ -111,10 +111,104 @@ impl std::fmt::Display for TransportMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrafficMode {
+    #[default]
+    Aggregation,
+    Resilient,
+}
+
+impl std::str::FromStr for TrafficMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "aggregation" => Ok(TrafficMode::Aggregation),
+            "resilient" => Ok(TrafficMode::Resilient),
+            other => anyhow::bail!("Unknown traffic mode '{}', expected 'aggregation' or 'resilient'", other),
+        }
+    }
+}
+
+impl std::fmt::Display for TrafficMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrafficMode::Aggregation => write!(f, "aggregation"),
+            TrafficMode::Resilient => write!(f, "resilient"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationStrategy {
+    #[default]
+    RoundRobin,
+    Random,
+}
+
+impl std::str::FromStr for AggregationStrategy {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "round_robin" | "roundrobin" => Ok(AggregationStrategy::RoundRobin),
+            "random" => Ok(AggregationStrategy::Random),
+            other => anyhow::bail!("Unknown aggregation strategy '{}', expected 'round_robin' or 'random'", other),
+        }
+    }
+}
+
+impl std::fmt::Display for AggregationStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AggregationStrategy::RoundRobin => write!(f, "round_robin"),
+            AggregationStrategy::Random => write!(f, "random"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientConfig {
-    #[serde(default = "default_socks5_listen")]
-    pub socks5_listen: SocketAddr,
+pub struct MultiServerRoutingConfig {
+    #[serde(default)]
+    pub mode: TrafficMode,
+
+    #[serde(default)]
+    pub strategy: AggregationStrategy,
+
+    /// Optional designated outbound server name or address.
+    /// When specified, all traffic to the Internet is relayed through this outbound server,
+    /// preventing the outbound IP seen by destination servers from changing.
+    #[serde(default)]
+    pub relay_to_server: Option<String>,
+
+    /// If the designated relay outbound server is temporarily unreachable,
+    /// whether to allow intermediate servers to exit directly to the target.
+    #[serde(default = "default_true")]
+    pub relay_fallback_direct: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for MultiServerRoutingConfig {
+    fn default() -> Self {
+        Self {
+            mode: TrafficMode::Aggregation,
+            strategy: AggregationStrategy::RoundRobin,
+            relay_to_server: None,
+            relay_fallback_direct: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerNodeConfig {
+    /// Friendly name or label for this server (e.g. "us-west-1", "node-a")
+    #[serde(default)]
+    pub name: String,
 
     pub server_addr: String,
 
@@ -135,14 +229,64 @@ pub struct ClientConfig {
 
     pub ca_cert: Option<PathBuf>,
 
-    pub socks5_user: Option<String>,
-    pub socks5_password: Option<String>,
+    /// Weight for random aggregation load-balancing (default: 1)
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+
+    /// Priority for resilient failover (lower number = higher priority, default: 1)
+    #[serde(default = "default_priority")]
+    pub priority: u32,
 
     #[serde(default)]
     pub obfuscation: Option<crate::obfs::ObfuscationConfig>,
 
     #[serde(default)]
     pub tls_fingerprint: Option<crate::tls_fingerprint::TlsFingerprintConfig>,
+}
+
+fn default_weight() -> u32 {
+    1
+}
+
+fn default_priority() -> u32 {
+    1
+}
+
+impl Default for ServerNodeConfig {
+    fn default() -> Self {
+        Self {
+            name: "default".to_string(),
+            server_addr: "127.0.0.1".to_string(),
+            server_port: default_server_port(),
+            auth_key: String::new(),
+            transport: TransportMode::Auto,
+            server_name: None,
+            insecure: false,
+            cert_fingerprint: None,
+            ca_cert: None,
+            weight: default_weight(),
+            priority: default_priority(),
+            obfuscation: None,
+            tls_fingerprint: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientConfig {
+    #[serde(default = "default_socks5_listen")]
+    pub socks5_listen: SocketAddr,
+
+    /// Upstream QuicProxy servers
+    #[serde(default)]
+    pub servers: Vec<ServerNodeConfig>,
+
+    /// Routing configuration for multi-server traffic
+    #[serde(default)]
+    pub routing: MultiServerRoutingConfig,
+
+    pub socks5_user: Option<String>,
+    pub socks5_password: Option<String>,
 }
 
 fn default_socks5_listen() -> SocketAddr {
@@ -157,28 +301,58 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             socks5_listen: default_socks5_listen(),
-            server_addr: "127.0.0.1".to_string(),
-            server_port: default_server_port(),
-            auth_key: String::new(),
-            transport: TransportMode::Auto,
-            server_name: None,
-            insecure: false,
-            cert_fingerprint: None,
-            ca_cert: None,
+            servers: vec![ServerNodeConfig::default()],
+            routing: MultiServerRoutingConfig::default(),
             socks5_user: None,
             socks5_password: None,
-            obfuscation: None,
-            tls_fingerprint: None,
         }
     }
 }
 
 impl ClientConfig {
+    pub fn new_single_server(socks5_listen: SocketAddr, server_node: ServerNodeConfig) -> Self {
+        Self {
+            socks5_listen,
+            servers: vec![server_node],
+            routing: MultiServerRoutingConfig::default(),
+            socks5_user: None,
+            socks5_password: None,
+        }
+    }
+
+    pub fn validate_and_normalize(&mut self) -> Result<()> {
+        if self.servers.is_empty() {
+            anyhow::bail!("Client configuration must specify at least one server in 'servers'");
+        }
+        for (idx, server) in self.servers.iter_mut().enumerate() {
+            if server.name.is_empty() {
+                server.name = format!("node-{}", idx + 1);
+            }
+            if server.server_addr.is_empty() {
+                anyhow::bail!("Server node #{} has empty server_addr", idx + 1);
+            }
+            if server.auth_key.is_empty() {
+                anyhow::bail!("Server node '{}' must have an auth_key", server.name);
+            }
+        }
+        if let Some(ref relay_target) = self.routing.relay_to_server {
+            let exists = self.servers.iter().any(|s| s.name == *relay_target || s.server_addr == *relay_target);
+            if !exists {
+                anyhow::bail!(
+                    "Configured relay_to_server '{}' was not found among configured servers",
+                    relay_target
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read client config from {}", path.as_ref().display()))?;
-        let config: ClientConfig = toml::from_str(&content)
+        let mut config: ClientConfig = toml::from_str(&content)
             .with_context(|| "Failed to parse client config TOML")?;
+        config.validate_and_normalize()?;
         Ok(config)
     }
 }

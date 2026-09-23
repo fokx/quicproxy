@@ -224,12 +224,129 @@ Tests cover:
 
 ---
 
-## Roadmap
+## Multi-Server Connectivity & Traffic Routing
 
-- **Phase 1** (Completed): Core QUIC Proxy, unified CLI, auto self-signed certificates, replay-resistant exporter auth, SOCKS5 client.
-- **Phase 2**: Automatic TCP fallback without the TLS-in-TLS problem (using ChaCha20-Poly1305 length-delimited stream multiplexing).
-- **Phase 3**: Active-probing resistance with HTTP/3 masquerading (reverse-proxying legitimate web services when unauthenticated).
-- **Phase 4**: SOCKS5 `UDP ASSOCIATE` via QUIC Unreliable Datagrams (RFC 9221) and advanced TLS fingerprint customization.
+`quicproxy` allows the client to connect to multiple upstream servers simultaneously. Traffic can be steered according to high-performance aggregation policies or resilient active-standby failover rules, with an optional outbound relaying anchor to preserve a consistent Internet egress IP.
+
+### 1. Traffic Modes
+
+#### A. Aggregation Mode (`mode = "aggregation"`)
+Designed for high-throughput acceleration. When using multi-connection download utilities such as **`aria2c`** (e.g. `aria2c -x 16 -s 16 --all-proxy=socks5://127.0.0.1:1080 <url>`), incoming TCP connections are distributed across multiple upstream servers.
+
+- **`round_robin`**: Cycles connections sequentially across all healthy upstream servers (`Server 1 -> Server 2 -> Server 3 -> Server 1...`).
+- **`random`**: Dynamically distributes connections across healthy servers according to configured server `weight` values.
+
+```
+                    +-------------------+
+                    | aria2c (16 Conns) |
+                    +---------+---------+
+                              | SOCKS5
+                    +---------v---------+
+                    | QuicProxy Client  |
+                    +---+-----+-----+---+
+           Conn 1, 4    |     |     |    Conn 3, 6
+         +--------------+     |     +--------------+
+         |         Conn 2, 5  |                    |
+         v                    v                    v
+  +---------------+   +---------------+   +---------------+
+  | Server Node 1 |   | Server Node 2 |   | Server Node 3 |
+  +-------+-------+   +-------+-------+   +-------+-------+
+          |                   |                   |
+          +-------------------+-------------------+
+                              |
+                              v
+                  [ Internet Destination ]
+         (Bandwidth aggregated across all 3 paths!)
+```
+
+#### B. Resilient Mode (`mode = "resilient"`)
+Designed for high reliability and anti-censorship failover. All connections are routed through the primary server (the node with the lowest `priority` integer, e.g. `priority = 1`). If the primary server becomes unreachable or blocked by firewalls, the client instantly and transparently steers subsequent connections to the next healthy standby server (`priority = 2`, etc.). Once the primary server recovers, it automatically resumes service.
+
+---
+
+### 2. Outbound Relaying Anchor (`relay_to_server`)
+
+By default (Normal Mode), whichever server handles a connection connects directly to the destination on the Internet. This means the destination server sees the respective IP of each server node.
+
+In some environments, CDNs or download hosts terminate sessions if download chunks originate from differing IP addresses. To solve this, `quicproxy` provides the **Outbound Relaying Anchor** option:
+
+Set `relay_to_server = "<name-or-address>"` in `[routing]`.
+
+When enabled:
+- Connections assigned to the designated anchor server exit directly to the Internet.
+- Connections assigned to intermediate servers are securely tunneled (`Client -> Intermediate -> Anchor -> Internet`) before reaching the destination!
+- **End-to-End Security**: The intermediate server acts only as a transport tunnel. The client conducts an end-to-end encrypted and authenticated ChaCha20-Poly1305 session directly with the anchor server. The intermediate server cannot view target hosts or decrypt data.
+- **Result**: You aggregate bandwidth across all server routes, while the destination server on the Internet **ALWAYS sees a single, consistent outbound IP** (the anchor server's IP)!
+
+```
+                    +-------------------+
+                    | aria2c (16 Conns) |
+                    +---------+---------+
+                              | SOCKS5
+                    +---------v---------+
+                    | QuicProxy Client  |
+                    +---+-----------+---+
+             Path 1     |           |     Path 2
+         +--------------+           +--------------+
+         | (Direct)                                | (Relayed)
+         v                                         v
+  +---------------+                        +---------------+
+  |   Server 1    |<=======================|   Server 2    |
+  | (Egress Node) |   Encrypted Relay Pipe | (Transit Hop) |
+  +-------+-------+                        +---------------+
+          |
+          v
+  [ Internet Destination ]
+  (Always sees Server 1's IP!)
+```
+
+---
+
+### 3. Example Multi-Server Configuration
+
+Save as `client.toml`:
+
+```toml
+socks5_listen = "127.0.0.1:1080"
+
+[routing]
+mode = "aggregation"        # "aggregation" or "resilient"
+strategy = "round_robin"    # "round_robin" or "random"
+
+# Optional: Anchor all egress traffic to server-us-1
+# relay_to_server = "server-us-1"
+# relay_fallback_direct = true
+
+[[servers]]
+name = "server-us-1"
+server_addr = "192.168.1.101"
+server_port = 4433
+auth_key = "secret-node-1"
+transport = "auto"
+insecure = true
+weight = 1
+priority = 1
+
+[[servers]]
+name = "server-hk-2"
+server_addr = "192.168.1.102"
+server_port = 4433
+auth_key = "secret-node-2"
+transport = "auto"
+insecure = true
+weight = 1
+priority = 2
+```
+
+Start the client with:
+```bash
+quicproxy client -c client.toml
+```
+
+Accelerate downloads with `aria2c`:
+```bash
+aria2c -x 16 -s 16 --all-proxy="socks5://127.0.0.1:1080" "https://example.com/largefile.zip"
+```
 
 ---
 

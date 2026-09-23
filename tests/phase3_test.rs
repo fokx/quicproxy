@@ -1,6 +1,6 @@
 use http::StatusCode;
 use quicproxy::client::run_client;
-use quicproxy::config::{ClientConfig, ServerConfig};
+use quicproxy::config::{ClientConfig, ServerConfig, ServerNodeConfig};
 use quicproxy::obfs::ObfuscationConfig;
 use quicproxy::server::antiprobe::AntiProbeConfig;
 use quicproxy::server::masquerade::{MasqueradeConfig, MasqueradeMode};
@@ -128,14 +128,16 @@ async fn test_masquerade_does_not_interfere_with_proxy() {
 
     sleep(Duration::from_millis(200)).await;
 
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_udp_addr.port(),
-        auth_key: auth_key.clone(),
-        insecure: true,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_udp_addr.port(),
+            auth_key: auth_key.clone(),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -252,19 +254,21 @@ async fn test_obfuscation_roundtrip() {
 
     sleep(Duration::from_millis(200)).await;
 
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_udp_addr.port(),
-        auth_key: auth_key.clone(),
-        transport: quicproxy::config::TransportMode::Quic,
-        insecure: true,
-        obfuscation: Some(ObfuscationConfig {
-            enabled: true,
-            key: obfs_key.clone(),
-        }),
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_udp_addr.port(),
+            auth_key: auth_key.clone(),
+            transport: quicproxy::config::TransportMode::Quic,
+            insecure: true,
+            obfuscation: Some(ObfuscationConfig {
+                enabled: true,
+                key: obfs_key.clone(),
+            }),
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;

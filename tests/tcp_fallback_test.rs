@@ -6,7 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, timeout};
 
 use quicproxy::client::run_client;
-use quicproxy::config::{ClientConfig, ServerConfig, TransportMode};
+use quicproxy::config::{ClientConfig, ServerConfig, ServerNodeConfig, TransportMode};
 use quicproxy::server::run_server;
 
 /// Spawn a simple TCP echo server that echoes all received bytes back to the sender
@@ -118,20 +118,18 @@ async fn test_tcp_transport_direct_echo() {
     sleep(Duration::from_millis(200)).await;
 
     // Explicitly configure client for TCP transport mode
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_addr.port(),
-        auth_key: auth_key.clone(),
-        transport: TransportMode::Tcp,
-        server_name: Some("localhost".to_string()),
-        insecure: true,
-        cert_fingerprint: None,
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_addr.port(),
+            auth_key: auth_key.clone(),
+            transport: TransportMode::Tcp,
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -175,20 +173,18 @@ async fn test_tcp_multiplexing_concurrent_stress() {
 
     sleep(Duration::from_millis(200)).await;
 
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_addr.port(),
-        auth_key: auth_key.clone(),
-        transport: TransportMode::Tcp,
-        server_name: Some("localhost".to_string()),
-        insecure: true,
-        cert_fingerprint: None,
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_addr.port(),
+            auth_key: auth_key.clone(),
+            transport: TransportMode::Tcp,
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -248,20 +244,18 @@ async fn test_auto_fallback_when_udp_blocked() {
     });
 
     // Configure client in "auto" mode (default)
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: tcp_listen_addr.port(),
-        auth_key: (*auth_key).clone(),
-        transport: TransportMode::Auto, // Auto-fallback
-        server_name: Some("localhost".to_string()),
-        insecure: true,
-        cert_fingerprint: None,
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: tcp_listen_addr.port(),
+            auth_key: (*auth_key).clone(),
+            transport: TransportMode::Auto, // Auto-fallback
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -303,20 +297,18 @@ async fn test_tcp_transport_auth_failure() {
     sleep(Duration::from_millis(200)).await;
 
     // Client connects with WRONG auth key
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_addr.port(),
-        auth_key: "wrong-password".to_string(),
-        transport: TransportMode::Tcp,
-        server_name: Some("localhost".to_string()),
-        insecure: true,
-        cert_fingerprint: None,
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_addr.port(),
+            auth_key: "wrong-password".to_string(),
+            transport: TransportMode::Tcp,
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;

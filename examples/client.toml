@@ -1,33 +1,97 @@
-# QuicProxy Client Configuration
+# ==============================================================================
+# QuicProxy Multi-Server Client Configuration
+# ==============================================================================
 
-# Local SOCKS5 proxy endpoint for applications (e.g. Firefox, Telegram, curl)
+# Local SOCKS5 proxy endpoint for applications (e.g. Firefox, Telegram, aria2c, curl)
 socks5_listen = "127.0.0.1:1080"
-
-# Remote QuicProxy server address and port
-server_addr = "127.0.0.1"
-server_port = 4433
-
-# Pre-shared authentication key (must match server)
-auth_key = "change-this-to-a-strong-secret-key"
-
-# Transport mode: "auto" (default: try QUIC with 3s timeout then TCP fallback), "quic", or "tcp"
-transport = "auto"
-
-# TLS Certificate Verification (choose one):
-# 1. Pin the server's certificate SHA-256 fingerprint (recommended for self-signed certs):
-# cert_fingerprint = "your-server-cert-sha256-fingerprint-here"
-
-# 2. Or specify a custom CA certificate:
-# ca_cert = "/path/to/ca.pem"
-
-# 3. Or skip verification for quick testing:
-insecure = true
-
-# 4. Or use standard WebPKI if server has a valid public domain cert (leave cert_fingerprint, ca_cert, and insecure unset)
-
-# Optional TLS SNI override (defaults to server_addr)
-# server_name = "yourdomain.com"
 
 # Optional SOCKS5 proxy authentication for local clients
 # socks5_user = "user"
 # socks5_password = "password"
+
+# ==============================================================================
+# Traffic Routing Configuration
+# ==============================================================================
+[routing]
+# Traffic Mode:
+#   - "aggregation": Distributes connections across all healthy upstream servers.
+#                    Accelerates multi-connection downloaders like aria2c (e.g. 16
+#                    parallel chunks split across server paths).
+#   - "resilient":   Normally routes all traffic through the primary server
+#                    (lowest priority number). If that server fails or disconnects,
+#                    automatically and seamlessly fails over to backup servers.
+mode = "aggregation"
+
+# Aggregation Strategy (only applicable when mode = "aggregation"):
+#   - "round_robin": Sequentially cycles connections across healthy servers (1 -> 2 -> 3 -> 1...).
+#   - "random":      Randomly hits healthy servers, weighted by each server's `weight` attribute.
+strategy = "round_robin"
+
+# Outbound Relaying Anchor (Optional, available for BOTH aggregation & resilient modes):
+#   - When unset (Normal Mode): Whichever server handles the connection connects
+#     directly to the Internet destination (destination sees that server's IP).
+#   - When set (e.g. relay_to_server = "server-us-1"):
+#     All egress traffic exiting to the Internet will be relayed through the designated
+#     outbound server!
+#     For example, in aggregation mode:
+#       - Connections assigned to server-us-1 exit directly to the target.
+#       - Connections assigned to server-hk-2 travel: Client -> server-hk-2 -> server-us-1 -> Target!
+#     This aggregates bandwidth across multiple upstream tunnels while ensuring the
+#     Internet destination ALWAYS sees a SINGLE, constant outbound IP (server-us-1's IP)!
+#
+# relay_to_server = "server-us-1"
+
+# If the designated outbound anchor server is temporarily unreachable,
+# whether intermediate servers are allowed to exit directly to the destination.
+relay_fallback_direct = true
+
+# ==============================================================================
+# Upstream Server Nodes
+# ==============================================================================
+
+# Server Node 1: Primary / Anchor node
+[[servers]]
+name = "server-us-1"
+server_addr = "192.168.1.101"
+server_port = 4433
+auth_key = "secret-key-node-1"
+
+# Transport mode: "auto" (default: tries QUIC first, falls back to TCP), "quic", or "tcp"
+transport = "auto"
+
+# TLS verification options (choose one):
+# 1. Self-signed cert fingerprint pinning:
+# cert_fingerprint = "01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF"
+# 2. Skip verification for testing:
+insecure = true
+# 3. WebPKI / Custom CA:
+# ca_cert = "/path/to/ca.pem"
+# server_name = "us1.yourdomain.com"
+
+# Weight for random aggregation mode (higher = more connections assigned)
+weight = 1
+
+# Priority for resilient failover mode (1 = highest priority / primary)
+priority = 1
+
+# Server Node 2: Secondary / Aggregation node
+[[servers]]
+name = "server-hk-2"
+server_addr = "192.168.1.102"
+server_port = 4433
+auth_key = "secret-key-node-2"
+transport = "auto"
+insecure = true
+weight = 1
+priority = 2
+
+# Server Node 3: Tertiary node
+# [[servers]]
+# name = "server-eu-3"
+# server_addr = "192.168.1.103"
+# server_port = 4433
+# auth_key = "secret-key-node-3"
+# transport = "auto"
+# insecure = true
+# weight = 2
+# priority = 3

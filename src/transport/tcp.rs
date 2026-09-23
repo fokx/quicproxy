@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context as TaskContext, Poll, Waker};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 
@@ -279,8 +278,8 @@ impl AsyncWrite for VirtualStream {
 }
 
 /// Helper function to write an encrypted frame to the TCP write half.
-async fn write_encrypted_frame(
-    writer: &mut OwnedWriteHalf,
+async fn write_encrypted_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
     sealing_key: &mut SealingKey<CounterNonce>,
     stream_id: u32,
     frame_type: u8,
@@ -317,8 +316,8 @@ async fn write_encrypted_frame(
 }
 
 /// Helper function to read an encrypted frame from the TCP read half.
-async fn read_encrypted_frame(
-    reader: &mut OwnedReadHalf,
+async fn read_encrypted_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
     opening_key: &mut OpeningKey<CounterNonce>,
 ) -> Result<(u32, u8, Vec<u8>)> {
     // 1. Read sealed length record (18 bytes)
@@ -374,7 +373,21 @@ impl TcpMuxer {
         opening_key_bytes: [u8; 32],
         is_server: bool,
     ) -> Result<(Self, Option<VirtualStream>)> {
-        let (mut reader, mut writer) = tcp_stream.into_split();
+        let (reader, writer) = tcp_stream.into_split();
+        Self::new_from_split(reader, writer, sealing_key_bytes, opening_key_bytes, is_server)
+    }
+
+    pub fn new_from_split<R, W>(
+        mut reader: R,
+        mut writer: W,
+        sealing_key_bytes: [u8; 32],
+        opening_key_bytes: [u8; 32],
+        is_server: bool,
+    ) -> Result<(Self, Option<VirtualStream>)>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
 
         let s_unbound = UnboundKey::new(&CHACHA20_POLY1305, &sealing_key_bytes)
             .map_err(|_| anyhow::anyhow!("Invalid AEAD sealing key"))?;
@@ -565,12 +578,20 @@ impl TcpTransport {
             .next()
             .context("No IP address resolved for server TCP fallback")?;
 
-        let mut stream = TcpStream::connect(server_sockaddr)
+        let stream = TcpStream::connect(server_sockaddr)
             .await
             .with_context(|| format!("Failed to connect to server TCP at {}", server_sockaddr))?;
 
         let _ = stream.set_nodelay(true);
+        Self::handshake_on_stream(stream, auth_key).await
+    }
 
+    /// Perform X25519 key exchange, ChaCha20-Poly1305 encryption setup, and auth handshake
+    /// over an arbitrary bidirectional stream (e.g. TcpStream or a proxied virtual stream).
+    pub async fn handshake_on_stream<S>(mut stream: S, auth_key: &str) -> Result<Self>
+    where
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
         // 1. Ephemeral X25519 Handshake
         let rng = SystemRandom::new();
         let my_priv = EphemeralPrivateKey::generate(&X25519, &rng)
@@ -599,8 +620,9 @@ impl TcpTransport {
             hkdf_derive_keys(&shared_secret);
 
         // 3. Initialize multiplexer (client writes with client_write_key, reads with server_write_key)
+        let (reader, writer) = tokio::io::split(stream);
         let (muxer, stream0_opt) =
-            TcpMuxer::new(stream, client_write_key, server_write_key, false)?;
+            TcpMuxer::new_from_split(reader, writer, client_write_key, server_write_key, false)?;
         let mut stream0 = stream0_opt.context("Stream 0 must be initialized")?;
 
         // 4. Authenticate over Stream 0

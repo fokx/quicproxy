@@ -1,5 +1,5 @@
 use quicproxy::client::run_client;
-use quicproxy::config::{ClientConfig, ServerConfig, TransportMode};
+use quicproxy::config::{ClientConfig, ServerConfig, ServerNodeConfig, TransportMode};
 use quicproxy::server::run_server;
 use quicproxy::tls_fingerprint::TlsFingerprintConfig;
 use std::net::SocketAddr;
@@ -79,15 +79,17 @@ async fn test_udp_associate_quic() {
 
     sleep(Duration::from_millis(300)).await;
 
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_listen_addr.port(),
-        auth_key: auth_key.clone(),
-        transport: TransportMode::Quic,
-        insecure: true,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_listen_addr.port(),
+            auth_key: auth_key.clone(),
+            transport: TransportMode::Quic,
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -147,15 +149,17 @@ async fn test_udp_associate_tcp_fallback() {
     sleep(Duration::from_millis(300)).await;
 
     // Force client into TCP fallback mode
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_listen_addr.port(),
-        auth_key: auth_key.clone(),
-        transport: TransportMode::Tcp,
-        insecure: true,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_listen_addr.port(),
+            auth_key: auth_key.clone(),
+            transport: TransportMode::Tcp,
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -212,14 +216,16 @@ async fn test_udp_association_lifetime() {
 
     sleep(Duration::from_millis(300)).await;
 
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_listen_addr.port(),
-        auth_key: auth_key.clone(),
-        insecure: true,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_listen_addr.port(),
+            auth_key: auth_key.clone(),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -274,14 +280,16 @@ async fn test_udp_concurrent_sessions() {
 
     sleep(Duration::from_millis(300)).await;
 
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_listen_addr.port(),
-        auth_key: auth_key.clone(),
-        insecure: true,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_listen_addr.port(),
+            auth_key: auth_key.clone(),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;

@@ -118,7 +118,7 @@ impl ProxyRequest {
 /// A UDP datagram frame for transport over QUIC unreliable datagrams or TCP stream encapsulation.
 ///
 /// Wire format:
-///   [4B session_id][1B atyp][addr bytes][2B port][payload]
+///   
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpDatagram {
     pub session_id: u32,

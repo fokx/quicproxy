@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, timeout};
 
 use quicproxy::client::run_client;
-use quicproxy::config::{ClientConfig, ServerConfig};
+use quicproxy::config::{ClientConfig, ServerConfig, ServerNodeConfig};
 use quicproxy::server::run_server;
 use quicproxy::tls::generate_self_signed;
 
@@ -77,20 +77,17 @@ async fn test_quicproxy_end_to_end_echo() {
     sleep(Duration::from_millis(200)).await;
 
     // 2. Configure and run client with pinned cert fingerprint
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_udp_addr.port(),
-        auth_key: auth_key.clone(),
-        server_name: Some("localhost".to_string()),
-        transport: Default::default(),
-        insecure: false,
-        cert_fingerprint: Some(fingerprint),
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_udp_addr.port(),
+            auth_key: auth_key.clone(),
+            server_name: Some("localhost".to_string()),
+            cert_fingerprint: Some(fingerprint),
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -176,20 +173,17 @@ async fn test_quicproxy_domain_resolution_on_server() {
     sleep(Duration::from_millis(200)).await;
 
     // Use insecure = true for fast testing
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_udp_addr.port(),
-        auth_key: auth_key.clone(),
-        server_name: Some("localhost".to_string()),
-        transport: Default::default(),
-        insecure: true,
-        cert_fingerprint: None,
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_udp_addr.port(),
+            auth_key: auth_key.clone(),
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
@@ -265,20 +259,17 @@ async fn test_quicproxy_auth_failure_rejected() {
     sleep(Duration::from_millis(200)).await;
 
     // Client uses the WRONG auth key
-    let client_cfg = ClientConfig {
-        socks5_listen: socks5_addr,
-        server_addr: "127.0.0.1".to_string(),
-        server_port: server_udp_addr.port(),
-        auth_key: "wrong-password-attacker".to_string(),
-        server_name: Some("localhost".to_string()),
-        transport: Default::default(),
-        insecure: true,
-        cert_fingerprint: None,
-        ca_cert: None,
-        socks5_user: None,
-        socks5_password: None,
-        ..Default::default()
-    };
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_udp_addr.port(),
+            auth_key: "wrong-password-attacker".to_string(),
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..Default::default()
+        },
+    );
 
     tokio::spawn(async move {
         let _ = run_client(client_cfg).await;
