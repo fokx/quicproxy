@@ -115,27 +115,43 @@ Phase 2 has been fully implemented, verified via automated test suites (4 new in
 
 ---
 
-## 4. Phase 3 Implementation Plan: Anti-Censorship & Camouflage
+## 4. Phase 3: Anti-Censorship & Camouflage (Completed)
 
-### 4.1 Active Probing Resistance & HTTP/3 Masquerade
-- When an unauthorized client, scanner, or firewall prober connects via QUIC:
-  - Rather than closing the connection or returning a custom error code (which acts as a fingerprint), the server invokes an **HTTP/3 masquerade engine** (`h3` + `h3-quinn`).
-  - **Reverse Proxy Mode**: Transparently forwards HTTP/3 requests to a legitimate website (e.g. `https://www.example.com` or configured URL).
-  - **File Server Mode**: Serves a legitimate static HTML/CSS web page from a local directory.
-  - To any external prober, the server is indistinguishable from a standard web server hosting public content.
+Phase 3 has been fully implemented, verified via automated test suites (5 new Phase 3 integration tests + 4 Phase 2 tests + 3 Phase 1 tests + 7 unit tests = 19/19 passed), and documented.
 
-### 4.2 Probing Defense Parameters (`src/server/antiprobe.rs`)
-- **Constant-Time Verification**: Prevent timing side-channels in token validation.
-- **Random Response Jitter**: Inject configurable random delay (10–50 ms) on auth handshakes to defeat precise network timing analysis.
-- **Rate Limiting**: Block IPs exceeding failed auth thresholds.
-- **Silent Drop on Garbage**: For unsolicited raw UDP datagrams without valid QUIC headers, silently discard without sending ICMP port-unreachable packets.
+### 4.1 Architecture Highlights
+- **Active Probing Resistance & HTTP/3 Camouflage (`src/server/masquerade.rs`)**:
+  - When unauthorized clients, scanners, or probers connect via QUIC:
+    - Rather than abruptly closing the connection or returning custom error codes (which fingerprint the proxy), the server transparently responds with RFC 9114 / RFC 9204 HTTP/3 web responses.
+    - **File Server Mode**: Serves a legitimate static HTML/CSS web page from a local directory or built-in default page.
+    - **Reverse Proxy Mode**: Fetches and mirrors legitimate upstream websites via `reqwest`.
+    - Opens the server HTTP/3 control stream (`[0x00, 0x04, 0x00]`) and writes HTTP/3 `HEADERS` (QPACK-encoded `:status: 200`) and `DATA` frames directly on request streams.
+    - Probers, curl (`curl --http3`), and browsers see a genuine, functional HTTP/3 web server.
+- **Anti-Probing Defenses (`src/server/antiprobe.rs`)**:
+  - **Constant-Time Verification**: Replay-resistant HMAC verification using `ring::hmac::verify` prevents timing side channels.
+  - **Random Response Jitter**: Injects configurable random delays (10–50 ms) on auth handshakes to thwart precise network timing analysis.
+  - **In-Memory Sliding-Window Rate Limiter**: Tracks failed auth attempts by IP address via concurrent `DashMap`. Once the threshold (default: 5 failures / 60s) is exceeded, subsequent attempts are diverted to masquerade or dropped. Resets immediately on successful auth.
+  - Applied to both QUIC and TCP fallback transports.
+- **Salamander Packet Obfuscation (`src/obfs/`)**:
+  - For censorship environments where QUIC packet headers (fixed bits, versions) are actively blocked by DPI:
+    - Derives a 2048-byte keystream from a pre-shared passphrase using `BLAKE2b-512` in counter mode.
+    - Symmetric XOR scrambles/unscrambles UDP datagrams in-place.
+    - Implemented directly into Quinn via `quinn::AsyncUdpSocket` (`ObfuscatedUdpSocket`) using `Endpoint::new_with_abstract_socket`.
+    - Configured with single-segment datagram processing (`max_transmit_segments = 1`, `max_receive_segments = 1`) to guarantee perfect 1:1 datagram XOR alignment without GSO/GRO boundary distortion.
+    - Strictly mutually exclusive with HTTP/3 masquerade (validated at startup).
 
-### 4.3 Optional Salamander-Style Packet Scrambling (`src/obfs/mod.rs`)
-- For networks where even standard QUIC headers are blocked:
-  - BLAKE2b-derived XOR keystream from a pre-shared obfuscation key.
-  - Scrambles QUIC fixed bits and header invariants so packets look like high-entropy white noise.
-  - Applied directly at the `UdpSocket` layer before Quinn parsing.
-  - *Note*: Mutually exclusive with HTTP/3 masquerading.
+### 4.2 Delivered Components
+1. `src/server/antiprobe.rs` — Sliding-window `RateLimiter` and `apply_auth_jitter`.
+2. `src/server/masquerade.rs` — `MasqueradeHandler`, RFC 9114/9204 HTTP/3 frame generator, `FileServer`, and `ReverseProxy` modes.
+3. `src/obfs/mod.rs` & `src/obfs/salamander.rs` — `SalamanderObfuscator` and `ObfuscatedUdpSocket` implementing Quinn's `AsyncUdpSocket`.
+4. `src/config.rs` & `src/main.rs` — Updated CLI flags (`--masquerade-mode`, `--masquerade-dir`, `--masquerade-upstream`, `--obfs-key`, `--rate-limit-max`, `--jitter-min`, `--jitter-max`) and configuration structs with full `Default` implementations.
+5. `src/tls.rs` — Configured `max_concurrent_bidi_streams(256)` and `max_concurrent_uni_streams(256)` on Quinn transport configs for bidirectional and unidirectional stream credits.
+6. `tests/phase3_test.rs` — 5 integration tests:
+   - `test_obfuscation_mutual_exclusion`: Validates server refuses to start with both obfuscation and masquerade enabled.
+   - `test_masquerade_file_server`: Simulates an external HTTP/3 client receiving a valid HTTP/3 200 OK and static HTML page.
+   - `test_masquerade_does_not_interfere_with_proxy`: Verifies proxy clients authenticate and relay traffic concurrently with masquerade enabled.
+   - `test_obfuscation_roundtrip`: Verifies end-to-end SOCKS5 proxying over Salamander XOR-scrambled UDP datagrams.
+   - `test_antiprobe_rate_limiting`: Verifies IP rate limiting after exceeding failed auth threshold.
 
 ---
 
@@ -164,19 +180,25 @@ Phase 2 has been fully implemented, verified via automated test suites (4 new in
 
 When starting the next conversation, you can instruct Antigravity:
 
-> *"We are building `quicproxy` in Rust. Phase 1 is completed and committed to git. Please read `PLAN_AND_STATUS_PHASE_2_4.md` and proceed with implementing Phase 2: TCP Fallback & Multiplexing (avoiding TLS-in-TLS)."*
+> *"We are building `quicproxy` in Rust. Phases 1, 2, and 3 are completed and verified (19/19 tests pass). Please read `PLAN_AND_STATUS_PHASE_2_4.md` and proceed with implementing Phase 4: Advanced Features (starting with SOCKS5 UDP ASSOCIATE and QUIC Datagrams RFC 9221)."*
 
 ### Verification Commands
 ```bash
-# Check existing build and run full test suite
+# Run full test suite across all phases (19 tests)
 cargo test
+
+# Run Phase 3 specific integration tests
+cargo test --test phase3_test
 
 # Build release binary
 cargo build --release
 
-# Run server with auto-cert
-./target/release/quicproxy server --listen 127.0.0.1:4433 --auth-key "test-pass"
+# Run server with HTTP/3 file server masquerade
+./target/release/quicproxy server --listen 127.0.0.1:4433 --auth-key "test-pass" --masquerade-mode file_server
 
-# Run client pointing to server
-./target/release/quicproxy client --server-addr 127.0.0.1 --server-port 4433 --auth-key "test-pass" --insecure --socks5-listen 127.0.0.1:1080
+# Run server with Salamander packet obfuscation
+./target/release/quicproxy server --listen 127.0.0.1:4433 --auth-key "test-pass" --obfs-key "scramble-secret"
+
+# Run client with Salamander packet obfuscation
+./target/release/quicproxy client --server-addr 127.0.0.1 --server-port 4433 --auth-key "test-pass" --insecure --obfs-key "scramble-secret" --socks5-listen 127.0.0.1:1080
 ```

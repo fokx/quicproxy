@@ -61,7 +61,7 @@ pub async fn handle_connection(
             rate_limiter.record_failure(remote_addr.ip());
 
             if masquerade.is_enabled() {
-                return masquerade.handle_quic_connection(conn).await;
+                return masquerade.handle_quic_stream(&conn, auth_send).await;
             } else {
                 apply_auth_jitter(anti_probe.auth_jitter_min_ms, anti_probe.auth_jitter_max_ms).await;
                 let resp = AuthResponse::new(STATUS_AUTH_FAILED);
@@ -85,7 +85,7 @@ pub async fn handle_connection(
         rate_limiter.record_failure(remote_addr.ip());
 
         if masquerade.is_enabled() {
-            return masquerade.handle_quic_connection(conn).await;
+            return masquerade.handle_quic_stream(&conn, auth_send).await;
         } else {
             let resp = AuthResponse::new(STATUS_AUTH_FAILED);
             let _ = write_auth_response(&mut auth_send, &resp).await;

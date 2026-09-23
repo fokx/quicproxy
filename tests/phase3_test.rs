@@ -7,19 +7,10 @@ use quicproxy::server::masquerade::{MasqueradeConfig, MasqueradeMode};
 use quicproxy::server::run_server;
 use quicproxy::tls::make_client_config;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::sleep;
-
-fn tempfile_named(filename: &str, content: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let unique = format!("quicproxy_p3_{}_{}", rand::random::<u32>(), filename);
-    dir.push(unique);
-    std::fs::write(&dir, content).unwrap();
-    dir
-}
 
 async fn start_echo_server() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

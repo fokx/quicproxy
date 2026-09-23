@@ -141,11 +141,11 @@ impl AsyncUdpSocket for ObfuscatedUdpSocket {
     }
 
     fn max_transmit_segments(&self) -> usize {
-        self.inner.max_gso_segments()
+        1
     }
 
     fn max_receive_segments(&self) -> usize {
-        self.inner.gro_segments()
+        1
     }
 }
 

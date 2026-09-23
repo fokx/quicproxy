@@ -3,6 +3,8 @@ use bytes::Bytes;
 use http::{Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +67,7 @@ impl MasqueradeConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct MasqueradeHandler {
     config: MasqueradeConfig,
     http_client: Option<reqwest::Client>,
@@ -95,6 +98,96 @@ impl MasqueradeHandler {
 
     pub fn is_enabled(&self) -> bool {
         self.config.mode != MasqueradeMode::Off
+    }
+
+    /// Handles a client connection stream by serving an HTTP/3 response on `auth_send`
+    /// and opening the server's HTTP/3 control stream.
+    pub async fn handle_quic_stream(&self, conn: &quinn::Connection, mut send: quinn::SendStream) -> Result<()> {
+        let remote_addr = conn.remote_address();
+        tracing::info!("Serving HTTP/3 masquerade response to {}", remote_addr);
+
+        // 1. Send server HTTP/3 control stream with SETTINGS frame per RFC 9114
+        if let Ok(mut uni) = conn.open_uni().await {
+            // Stream type 0x00 (Control Stream), Frame 0x04 (SETTINGS), Length 0x00 (empty)
+            let _ = uni.write_all(&[0x00, 0x04, 0x00]).await;
+            tokio::spawn(async move {
+                let _ = uni.stopped().await;
+            });
+        }
+
+        // 2. Obtain content to serve
+        let (status, content_type, body) = match self.config.mode {
+            MasqueradeMode::FileServer => {
+                let (status, mime, body) = self.serve_file("/").await;
+                (status, mime, body.to_vec())
+            }
+            MasqueradeMode::ReverseProxy => {
+                let (status, mime, body) = self.proxy_request("/").await;
+                (status, mime, body.to_vec())
+            }
+            MasqueradeMode::Off => {
+                (StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec())
+            }
+        };
+
+        // 3. Write HTTP/3 response frames to send stream
+        self.send_h3_response(&mut send, status, content_type, &body).await?;
+
+        // 4. In background, if the client sends additional HTTP/3 request streams on this connection, serve them too
+        let conn_clone = conn.clone();
+        let this = Arc::new(self.clone());
+        tokio::spawn(async move {
+            while let Ok((mut next_send, _)) = conn_clone.accept_bi().await {
+                let (s, ct, b) = match this.config.mode {
+                    MasqueradeMode::FileServer => {
+                        let (status, mime, body) = this.serve_file("/").await;
+                        (status, mime, body.to_vec())
+                    }
+                    MasqueradeMode::ReverseProxy => {
+                        let (status, mime, body) = this.proxy_request("/").await;
+                        (status, mime, body.to_vec())
+                    }
+                    MasqueradeMode::Off => {
+                        (StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec())
+                    }
+                };
+                let _ = this.send_h3_response(&mut next_send, s, ct, &b).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn send_h3_response(
+        &self,
+        send: &mut quinn::SendStream,
+        status: StatusCode,
+        _content_type: &str,
+        body: &[u8],
+    ) -> Result<()> {
+        let status_code_idx = if status == StatusCode::OK {
+            0xd9 // Indexed Static 25: :status 200
+        } else if status == StatusCode::NOT_FOUND {
+            0xdb // Indexed Static 27: :status 404
+        } else {
+            0xd9
+        };
+
+        // QPACK block with static status header (RFC 9204)
+        let qpack = vec![0x00, 0x00, status_code_idx];
+
+        // Write HEADERS frame (type 0x01)
+        send.write_u8(0x01).await?;
+        write_varint(send, qpack.len() as u64).await?;
+        send.write_all(&qpack).await?;
+
+        // Write DATA frame (type 0x00)
+        send.write_u8(0x00).await?;
+        write_varint(send, body.len() as u64).await?;
+        send.write_all(body).await?;
+        send.finish()?;
+
+        Ok(())
     }
 
     pub async fn handle_quic_connection(&self, conn: quinn::Connection) -> Result<()> {
@@ -213,7 +306,6 @@ impl MasqueradeHandler {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("text/html; charset=utf-8");
 
-                    // For content_type, we return a known string or fall back to generic
                     let mime: &'static str = if content_type.contains("text/html") {
                         "text/html; charset=utf-8"
                     } else if content_type.contains("application/json") {
@@ -235,6 +327,18 @@ impl MasqueradeHandler {
         } else {
             (StatusCode::BAD_GATEWAY, "text/plain", Bytes::from_static(b"Bad Gateway: HTTP client not initialized"))
         }
+    }
+}
+
+async fn write_varint<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, val: u64) -> std::io::Result<()> {
+    if val < 64 {
+        w.write_u8(val as u8).await
+    } else if val < 16384 {
+        w.write_u16(0x4000 | (val as u16)).await
+    } else if val < 1073741824 {
+        w.write_u32(0x8000_0000 | (val as u32)).await
+    } else {
+        w.write_u64(0xc000_0000_0000_0000 | val).await
     }
 }
 

@@ -94,6 +94,8 @@ pub fn make_server_config(
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
+    transport.max_concurrent_bidi_streams(256u32.into());
+    transport.max_concurrent_uni_streams(256u32.into());
     server_config.transport_config(Arc::new(transport));
 
     Ok(server_config)
@@ -250,6 +252,8 @@ pub fn make_client_config(
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
+    transport.max_concurrent_bidi_streams(256u32.into());
+    transport.max_concurrent_uni_streams(256u32.into());
     client_config.transport_config(Arc::new(transport));
 
     Ok(client_config)
