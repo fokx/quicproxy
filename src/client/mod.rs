@@ -59,8 +59,23 @@ async fn create_quic_endpoint(config: &ClientConfig) -> Result<Endpoint> {
     )?;
 
     let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-    let mut endpoint = Endpoint::client(bind_addr)
-        .context("Failed to bind QUIC client endpoint")?;
+
+    let mut endpoint = if let Some(ref obfs_cfg) = config.obfuscation.as_ref().filter(|o| o.enabled) {
+        let obfs_sock = crate::obfs::salamander::ObfuscatedUdpSocket::bind(bind_addr, &obfs_cfg.key)
+            .context("Failed to bind obfuscated client UDP socket")?;
+        let runtime = quinn::default_runtime().context("No default Quinn runtime")?;
+        Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            None,
+            Arc::new(obfs_sock),
+            runtime,
+        )
+        .context("Failed to create QUIC client endpoint with obfuscated socket")?
+    } else {
+        Endpoint::client(bind_addr)
+            .context("Failed to bind QUIC client endpoint")?
+    };
+
     endpoint.set_default_client_config(client_crypto);
     Ok(endpoint)
 }

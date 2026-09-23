@@ -60,6 +60,34 @@ struct ServerArgs {
     /// Domain name for self-signed TLS certificate
     #[arg(long, default_value = "localhost")]
     domain: String,
+
+    /// HTTP/3 masquerade mode: off, file_server, or reverse_proxy
+    #[arg(long)]
+    masquerade_mode: Option<quicproxy::server::masquerade::MasqueradeMode>,
+
+    /// Directory of static files for HTTP/3 file_server masquerade
+    #[arg(long)]
+    masquerade_dir: Option<PathBuf>,
+
+    /// Upstream URL for HTTP/3 reverse_proxy masquerade
+    #[arg(long)]
+    masquerade_upstream: Option<String>,
+
+    /// Packet obfuscation key (Salamander)
+    #[arg(long)]
+    obfs_key: Option<String>,
+
+    /// Anti-probe rate limit: max failed attempts before blocking/diverting
+    #[arg(long)]
+    rate_limit_max: Option<u32>,
+
+    /// Anti-probe jitter min in ms
+    #[arg(long)]
+    jitter_min: Option<u64>,
+
+    /// Anti-probe jitter max in ms
+    #[arg(long)]
+    jitter_max: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -111,6 +139,10 @@ struct ClientArgs {
     /// SOCKS5 password authentication
     #[arg(long)]
     socks5_password: Option<String>,
+
+    /// Packet obfuscation key (Salamander)
+    #[arg(long)]
+    obfs_key: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -161,6 +193,7 @@ async fn main() -> Result<()> {
                     tls_key: args.key.clone(),
                     auto_cert: true,
                     auto_cert_domain: args.domain,
+                    ..Default::default()
                 }
             };
 
@@ -175,6 +208,41 @@ async fn main() -> Result<()> {
             }
             if let Some(key) = args.key {
                 config.tls_key = Some(key);
+            }
+
+            if args.masquerade_mode.is_some() || args.masquerade_dir.is_some() || args.masquerade_upstream.is_some() {
+                let mut masq = config.masquerade.unwrap_or_default();
+                if let Some(mode) = args.masquerade_mode {
+                    masq.mode = mode;
+                }
+                if let Some(dir) = args.masquerade_dir {
+                    masq.static_dir = Some(dir);
+                }
+                if let Some(up) = args.masquerade_upstream {
+                    masq.upstream_url = Some(up);
+                }
+                config.masquerade = Some(masq);
+            }
+
+            if let Some(key) = args.obfs_key {
+                config.obfuscation = Some(quicproxy::obfs::ObfuscationConfig {
+                    enabled: true,
+                    key,
+                });
+            }
+
+            if args.rate_limit_max.is_some() || args.jitter_min.is_some() || args.jitter_max.is_some() {
+                let mut ap = config.anti_probe.unwrap_or_default();
+                if let Some(rm) = args.rate_limit_max {
+                    ap.rate_limit_max_failures = rm;
+                }
+                if let Some(jmin) = args.jitter_min {
+                    ap.auth_jitter_min_ms = jmin;
+                }
+                if let Some(jmax) = args.jitter_max {
+                    ap.auth_jitter_max_ms = jmax;
+                }
+                config.anti_probe = Some(ap);
             }
 
             run_server(config).await?;
@@ -203,6 +271,7 @@ async fn main() -> Result<()> {
                     ca_cert: args.ca_cert.clone(),
                     socks5_user: args.socks5_user.clone(),
                     socks5_password: args.socks5_password.clone(),
+                    ..Default::default()
                 }
             };
 
@@ -232,6 +301,12 @@ async fn main() -> Result<()> {
             }
             if let Some(sni) = args.sni {
                 config.server_name = Some(sni);
+            }
+            if let Some(key) = args.obfs_key {
+                config.obfuscation = Some(quicproxy::obfs::ObfuscationConfig {
+                    enabled: true,
+                    key,
+                });
             }
 
             run_client(config).await?;

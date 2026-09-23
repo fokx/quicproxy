@@ -108,6 +108,7 @@ async fn test_tcp_transport_direct_echo() {
         tls_key: None,
         auto_cert: true,
         auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -129,6 +130,7 @@ async fn test_tcp_transport_direct_echo() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -164,6 +166,7 @@ async fn test_tcp_multiplexing_concurrent_stress() {
         tls_key: None,
         auto_cert: true,
         auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -184,6 +187,7 @@ async fn test_tcp_multiplexing_concurrent_stress() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -227,14 +231,18 @@ async fn test_auto_fallback_when_udp_blocked() {
 
     let auth_key = Arc::new("udp-blocked-auto-fallback-test".to_string());
     let auth_key_server = Arc::clone(&auth_key);
+    let rate_limiter = Arc::new(quicproxy::server::antiprobe::RateLimiter::new(10, 60));
+    let anti_probe = Arc::new(quicproxy::server::antiprobe::AntiProbeConfig::default());
 
     // Bind TCP listener only
     let tcp_listener = TcpListener::bind(tcp_listen_addr).await.unwrap();
     tokio::spawn(async move {
         while let Ok((stream, _)) = tcp_listener.accept().await {
             let key = Arc::clone(&auth_key_server);
+            let rl = Arc::clone(&rate_limiter);
+            let ap = Arc::clone(&anti_probe);
             tokio::spawn(async move {
-                let _ = quicproxy::server::tcp::handle_tcp_connection(stream, key).await;
+                let _ = quicproxy::server::tcp::handle_tcp_connection(stream, key, rl, ap).await;
             });
         }
     });
@@ -252,6 +260,7 @@ async fn test_auto_fallback_when_udp_blocked() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -284,6 +293,7 @@ async fn test_tcp_transport_auth_failure() {
         tls_key: None,
         auto_cert: true,
         auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -305,6 +315,7 @@ async fn test_tcp_transport_auth_failure() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {

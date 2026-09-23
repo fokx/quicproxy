@@ -66,6 +66,7 @@ async fn test_quicproxy_end_to_end_echo() {
         tls_key: Some(key_file.clone()),
         auto_cert: false,
         auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
     };
 
     // Spawn server
@@ -88,6 +89,7 @@ async fn test_quicproxy_end_to_end_echo() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -164,6 +166,7 @@ async fn test_quicproxy_domain_resolution_on_server() {
         tls_key: None,
         auto_cert: true,
         auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -185,6 +188,7 @@ async fn test_quicproxy_domain_resolution_on_server() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -251,6 +255,7 @@ async fn test_quicproxy_auth_failure_rejected() {
         tls_key: None,
         auto_cert: true,
         auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
     };
 
     tokio::spawn(async move {
@@ -272,6 +277,7 @@ async fn test_quicproxy_auth_failure_rejected() {
         ca_cert: None,
         socks5_user: None,
         socks5_password: None,
+        ..Default::default()
     };
 
     tokio::spawn(async move {

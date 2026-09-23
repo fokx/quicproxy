@@ -19,6 +19,15 @@ pub struct ServerConfig {
 
     #[serde(default = "default_auto_cert_domain")]
     pub auto_cert_domain: String,
+
+    #[serde(default)]
+    pub masquerade: Option<crate::server::masquerade::MasqueradeConfig>,
+
+    #[serde(default)]
+    pub anti_probe: Option<crate::server::antiprobe::AntiProbeConfig>,
+
+    #[serde(default)]
+    pub obfuscation: Option<crate::obfs::ObfuscationConfig>,
 }
 
 fn default_server_listen() -> SocketAddr {
@@ -31,6 +40,22 @@ fn default_auto_cert() -> bool {
 
 fn default_auto_cert_domain() -> String {
     "localhost".to_string()
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen: default_server_listen(),
+            auth_key: String::new(),
+            tls_cert: None,
+            tls_key: None,
+            auto_cert: default_auto_cert(),
+            auto_cert_domain: default_auto_cert_domain(),
+            masquerade: None,
+            anti_probe: None,
+            obfuscation: None,
+        }
+    }
 }
 
 impl ServerConfig {
@@ -104,6 +129,9 @@ pub struct ClientConfig {
 
     pub socks5_user: Option<String>,
     pub socks5_password: Option<String>,
+
+    #[serde(default)]
+    pub obfuscation: Option<crate::obfs::ObfuscationConfig>,
 }
 
 fn default_socks5_listen() -> SocketAddr {
@@ -112,6 +140,25 @@ fn default_socks5_listen() -> SocketAddr {
 
 fn default_server_port() -> u16 {
     4433
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            socks5_listen: default_socks5_listen(),
+            server_addr: "127.0.0.1".to_string(),
+            server_port: default_server_port(),
+            auth_key: String::new(),
+            transport: TransportMode::Auto,
+            server_name: None,
+            insecure: false,
+            cert_fingerprint: None,
+            ca_cert: None,
+            socks5_user: None,
+            socks5_password: None,
+            obfuscation: None,
+        }
+    }
 }
 
 impl ClientConfig {

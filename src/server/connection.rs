@@ -2,56 +2,101 @@ use anyhow::{bail, Context, Result};
 use quinn::Connection;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::sleep;
 
+use super::antiprobe::{apply_auth_jitter, AntiProbeConfig, RateLimiter};
+use super::masquerade::MasqueradeHandler;
 use super::relay;
 use crate::auth::verify_auth_token;
 use crate::protocol::{
     read_auth_request, write_auth_response, AuthResponse, STATUS_AUTH_FAILED, STATUS_SUCCESS,
 };
 
-pub async fn handle_connection(conn: Connection, auth_key: Arc<String>) -> Result<()> {
+pub async fn handle_connection(
+    conn: Connection,
+    auth_key: Arc<String>,
+    masquerade: Arc<MasqueradeHandler>,
+    rate_limiter: Arc<RateLimiter>,
+    anti_probe: Arc<AntiProbeConfig>,
+) -> Result<()> {
     let remote_addr = conn.remote_address();
     tracing::info!("Accepted incoming QUIC connection from {}", remote_addr);
 
-    // First bidirectional stream must perform authentication
-    let (mut auth_send, mut auth_recv) = match conn.accept_bi().await {
-        Ok(streams) => streams,
-        Err(e) => {
-            tracing::warn!("Connection from {} closed before auth: {}", remote_addr, e);
+    // 1. IP Rate Limiting Check
+    if !rate_limiter.check_allowed(&remote_addr.ip()) {
+        tracing::warn!("Remote IP {} is rate-limited; diverting/rejecting", remote_addr.ip());
+        if masquerade.is_enabled() {
+            return masquerade.handle_quic_connection(conn).await;
+        } else {
+            conn.close(1u32.into(), b"Rate limited");
+            return Ok(());
+        }
+    }
+
+    // 2. Accept first bidirectional stream (timeout to avoid hanging connections)
+    let accept_bi_result = tokio::time::timeout(Duration::from_secs(3), conn.accept_bi()).await;
+    let (mut auth_send, mut auth_recv) = match accept_bi_result {
+        Ok(Ok(streams)) => streams,
+        Ok(Err(e)) => {
+            tracing::warn!("Connection from {} closed before opening stream: {}", remote_addr, e);
+            if masquerade.is_enabled() {
+                return masquerade.handle_quic_connection(conn).await;
+            }
+            return Ok(());
+        }
+        Err(_) => {
+            tracing::debug!("Connection from {} timed out waiting for bidi stream", remote_addr);
+            if masquerade.is_enabled() {
+                return masquerade.handle_quic_connection(conn).await;
+            }
             return Ok(());
         }
     };
 
-    let auth_req = match read_auth_request(&mut auth_recv).await {
-        Ok(req) => req,
-        Err(e) => {
-            tracing::warn!("Invalid auth packet from {}: {}", remote_addr, e);
-            // Delay slightly to prevent rapid probing
-            sleep(Duration::from_millis(50)).await;
+    // 3. Attempt to read AuthRequest
+    let auth_req_result = tokio::time::timeout(Duration::from_secs(3), read_auth_request(&mut auth_recv)).await;
+    let auth_req = match auth_req_result {
+        Ok(Ok(req)) => req,
+        _ => {
+            tracing::warn!("Non-proxy or invalid auth packet from {}", remote_addr);
+            rate_limiter.record_failure(remote_addr.ip());
+
+            if masquerade.is_enabled() {
+                return masquerade.handle_quic_connection(conn).await;
+            } else {
+                apply_auth_jitter(anti_probe.auth_jitter_min_ms, anti_probe.auth_jitter_max_ms).await;
+                let resp = AuthResponse::new(STATUS_AUTH_FAILED);
+                let _ = write_auth_response(&mut auth_send, &resp).await;
+                let _ = auth_send.finish();
+                conn.close(1u32.into(), b"Auth failed");
+                return Ok(());
+            }
+        }
+    };
+
+    // 4. Verify auth token
+    let is_valid = verify_auth_token(&conn, &auth_key, &auth_req.token)
+        .context("Error verifying auth token")?;
+
+    // Apply random response jitter
+    apply_auth_jitter(anti_probe.auth_jitter_min_ms, anti_probe.auth_jitter_max_ms).await;
+
+    if !is_valid {
+        tracing::warn!("Authentication failed for client {}", remote_addr);
+        rate_limiter.record_failure(remote_addr.ip());
+
+        if masquerade.is_enabled() {
+            return masquerade.handle_quic_connection(conn).await;
+        } else {
             let resp = AuthResponse::new(STATUS_AUTH_FAILED);
             let _ = write_auth_response(&mut auth_send, &resp).await;
             let _ = auth_send.finish();
             conn.close(1u32.into(), b"Auth failed");
-            return Ok(());
+            bail!("Authentication failed for {}", remote_addr);
         }
-    };
-
-    let is_valid = verify_auth_token(&conn, &auth_key, &auth_req.token)
-        .context("Error verifying auth token")?;
-
-    if !is_valid {
-        tracing::warn!("Authentication failed for client {}", remote_addr);
-        // Delay slightly before responding to deter timing attacks
-        sleep(Duration::from_millis(50)).await;
-        let resp = AuthResponse::new(STATUS_AUTH_FAILED);
-        let _ = write_auth_response(&mut auth_send, &resp).await;
-        let _ = auth_send.finish();
-        conn.close(1u32.into(), b"Auth failed");
-        bail!("Authentication failed for {}", remote_addr);
     }
 
-    // Auth succeeded
+    // Auth succeeded!
+    rate_limiter.record_success(&remote_addr.ip());
     let resp = AuthResponse::new(STATUS_SUCCESS);
     write_auth_response(&mut auth_send, &resp)
         .await
