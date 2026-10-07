@@ -350,6 +350,116 @@ aria2c -x 16 -s 16 --all-proxy="socks5://127.0.0.1:1080" "https://example.com/la
 
 ---
 
+## Access Control List (ACL) & Outbounds
+
+QuicProxy features an Access Control List engine compatible with **Hysteria 2's ACL specification**, configured using clean TOML syntax.
+
+ACL rules allow granular traffic routing, ad blocking, domestic traffic bypass, DNS hijacking, and upstream proxy chaining for both TCP connections and UDP datagrams.
+
+### Rule Syntax
+
+```text
+outbound(address[, proto_port[, hijack_address]])
+```
+
+Rules are evaluated from top to bottom; the **first matching rule** applies. Lines starting with `#` and empty lines are ignored.
+
+- **`outbound`**: The target outbound name (`direct`, `reject`, `default`, or a custom outbound name).
+- **`address`**: Destination host or IP pattern:
+  - `all` or `*`: Matches every target.
+  - IP Address: `1.2.3.4`, `2606:4700::1`
+  - CIDR Subnet: `192.168.0.0/16`, `2606:4700::/44`
+  - Exact Domain: `example.com`
+  - Wildcard Domain: `*.example.com`, `google.*`
+  - Domain Suffix: `suffix:google.com`
+  - GeoIP: `geoip:cn`, `geoip:us`, `geoip:private`
+  - GeoSite: `geosite:google`, `geosite:cn`, `geosite:category-ads-all`, `geosite:google @cn`
+- **`proto_port`** (Optional): Protocol and port filter:
+  - Omitted or `*` or `*/*`: All protocols and ports.
+  - `tcp`, `udp`: Specific protocol, any port.
+  - `tcp/80`, `udp/53`: Specific protocol and port.
+  - `*/443`: Both TCP and UDP on port 443.
+  - `tcp/8000-9000`: Port range.
+- **`hijack_address`** (Optional): Rewrites destination IP to this address (e.g. DNS port hijacking).
+
+### Server Configuration (`server.toml`)
+
+```toml
+listen = "0.0.0.0:4433"
+auth_key = "secret-key"
+
+[acl]
+# Either inline rules or path to an ACL rule file:
+# file = "/etc/quicproxy/acl.txt"
+inline = [
+    # Block internal LAN IPs
+    "reject(10.0.0.0/8)",
+    "reject(172.16.0.0/12)",
+    "reject(192.168.0.0/16)",
+    "reject(fc00::/7)",
+
+    # Block advertising domains
+    "reject(geosite:category-ads-all)",
+
+    # Hijack outbound DNS queries to local resolver
+    "direct(all, udp/53, 127.0.0.1)",
+
+    # Route domestic destinations directly
+    "direct(geoip:cn)",
+    "direct(geosite:cn)",
+
+    # Fallback outbound
+    "direct(all)"
+]
+
+# Optional GeoIP / GeoSite paths (auto-downloads from Loyalsoldier v2ray-rules-dat if omitted):
+# geoip = "/var/lib/quicproxy/geoip.dat"
+# geosite = "/var/lib/quicproxy/geosite.dat"
+# geo_update_interval = "168h" # 7 days
+```
+
+### Custom Outbounds
+
+You can chain QuicProxy with upstream SOCKS5 or HTTP proxies, or bind to specific outgoing network interfaces:
+
+```toml
+# Custom Direct outbound binding to specific local IPv4 address:
+[[outbounds]]
+name = "direct-v4"
+type = "direct"
+[outbounds.direct]
+mode = "4" # "auto", "4", "6", "46", "64"
+bind_ipv4 = "192.0.2.10"
+
+# Upstream SOCKS5 Proxy:
+[[outbounds]]
+name = "tor"
+type = "socks5"
+[outbounds.socks5]
+addr = "127.0.0.1:9050"
+
+# Upstream HTTP CONNECT Proxy:
+[[outbounds]]
+name = "corp-proxy"
+type = "http"
+[outbounds.http]
+url = "http://proxy.corp.internal:8080"
+```
+
+### CLI Flag Support
+
+You can also pass ACL rule files directly via the `--acl-file` command-line flag:
+
+```bash
+# Server with ACL rule file:
+quicproxy server --listen 0.0.0.0:4433 --auth-key "password" --acl-file /path/to/rules.txt
+
+# Client with ACL rule file:
+quicproxy client -c client.toml --acl-file /path/to/client-rules.txt
+```
+
+---
+
 ## License
 
 Licensed under the Apache License, Version 2.0 (the "License");

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +31,12 @@ pub struct ServerConfig {
 
     #[serde(default = "default_udp_session_timeout")]
     pub udp_session_timeout_secs: u64,
+
+    #[serde(default)]
+    pub acl: Option<AclConfig>,
+
+    #[serde(default)]
+    pub outbounds: Vec<OutboundConfig>,
 }
 
 fn default_server_listen() -> SocketAddr {
@@ -62,6 +68,8 @@ impl Default for ServerConfig {
             anti_probe: None,
             obfuscation: None,
             udp_session_timeout_secs: default_udp_session_timeout(),
+            acl: None,
+            outbounds: Vec::new(),
         }
     }
 }
@@ -72,8 +80,158 @@ impl ServerConfig {
             .with_context(|| format!("Failed to read server config from {}", path.as_ref().display()))?;
         let config: ServerConfig = toml::from_str(&content)
             .with_context(|| "Failed to parse server config TOML")?;
+        if let Some(ref acl) = config.acl {
+            acl.validate()?;
+        }
         Ok(config)
     }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct InlineRules(pub Vec<String>);
+
+impl<'de> Deserialize<'de> for InlineRules {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrVec {
+            Single(String),
+            Multiple(Vec<String>),
+        }
+        match StringOrVec::deserialize(deserializer)? {
+            StringOrVec::Single(s) => {
+                let lines: Vec<String> = s.lines().map(|l| l.to_string()).collect();
+                Ok(InlineRules(lines))
+            }
+            StringOrVec::Multiple(v) => Ok(InlineRules(v)),
+        }
+    }
+}
+
+impl InlineRules {
+    pub fn to_rules_string(&self) -> String {
+        self.0.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AclConfig {
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub inline: Option<InlineRules>,
+
+    #[serde(default)]
+    pub geoip: Option<PathBuf>,
+
+    #[serde(default)]
+    pub geosite: Option<PathBuf>,
+
+    #[serde(default)]
+    pub geo_update_interval: Option<String>,
+}
+
+impl AclConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.file.is_some() && self.inline.is_some() {
+            anyhow::bail!("cannot set both acl.file and acl.inline");
+        }
+        Ok(())
+    }
+
+    pub fn load_rules_string(&self) -> Result<String> {
+        self.validate()?;
+        if let Some(ref path) = self.file {
+            let s = fs::read_to_string(path)
+                .with_context(|| format!("Failed to read ACL rules from {}", path.display()))?;
+            Ok(s)
+        } else if let Some(ref inline) = self.inline {
+            Ok(inline.to_rules_string())
+        } else {
+            Ok(String::new())
+        }
+    }
+
+    pub fn parse_geo_update_interval(&self) -> Option<std::time::Duration> {
+        self.geo_update_interval.as_deref().and_then(parse_duration)
+    }
+}
+
+pub fn parse_duration(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_suffix('h') {
+        let hours: u64 = rest.trim().parse().ok()?;
+        return Some(std::time::Duration::from_secs(hours * 3600));
+    }
+    if let Some(rest) = s.strip_suffix('d') {
+        let days: u64 = rest.trim().parse().ok()?;
+        return Some(std::time::Duration::from_secs(days * 86400));
+    }
+    if let Some(rest) = s.strip_suffix('m') {
+        let mins: u64 = rest.trim().parse().ok()?;
+        return Some(std::time::Duration::from_secs(mins * 60));
+    }
+    if let Some(rest) = s.strip_suffix('s') {
+        let secs: u64 = rest.trim().parse().ok()?;
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    let secs: u64 = s.parse().ok()?;
+    Some(std::time::Duration::from_secs(secs))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutboundType {
+    Direct,
+    Reject,
+    Socks5,
+    Http,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DirectOutboundConfig {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub bind_ipv4: Option<Ipv4Addr>,
+    #[serde(default)]
+    pub bind_ipv6: Option<Ipv6Addr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Socks5OutboundConfig {
+    pub addr: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpOutboundConfig {
+    pub url: String,
+    #[serde(default)]
+    pub insecure: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboundConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub outbound_type: OutboundType,
+    #[serde(default)]
+    pub direct: Option<DirectOutboundConfig>,
+    #[serde(default)]
+    pub socks5: Option<Socks5OutboundConfig>,
+    #[serde(default)]
+    pub http: Option<HttpOutboundConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -287,6 +445,12 @@ pub struct ClientConfig {
 
     pub socks5_user: Option<String>,
     pub socks5_password: Option<String>,
+
+    #[serde(default)]
+    pub acl: Option<AclConfig>,
+
+    #[serde(default)]
+    pub outbounds: Vec<OutboundConfig>,
 }
 
 fn default_socks5_listen() -> SocketAddr {
@@ -305,6 +469,8 @@ impl Default for ClientConfig {
             routing: MultiServerRoutingConfig::default(),
             socks5_user: None,
             socks5_password: None,
+            acl: None,
+            outbounds: Vec::new(),
         }
     }
 }
@@ -317,10 +483,15 @@ impl ClientConfig {
             routing: MultiServerRoutingConfig::default(),
             socks5_user: None,
             socks5_password: None,
+            acl: None,
+            outbounds: Vec::new(),
         }
     }
 
     pub fn validate_and_normalize(&mut self) -> Result<()> {
+        if let Some(ref acl) = self.acl {
+            acl.validate()?;
+        }
         if self.servers.is_empty() {
             anyhow::bail!("Client configuration must specify at least one server in 'servers'");
         }

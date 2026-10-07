@@ -1,6 +1,8 @@
+# ==============================================================================
 # QuicProxy Server Configuration
+# ==============================================================================
 
-# Listening address for incoming QUIC connections (UDP)
+# Listening address for incoming QUIC and fallback TCP connections
 listen = "0.0.0.0:4433"
 
 # Pre-shared authentication key (must match client)
@@ -16,3 +18,93 @@ auth_key = "change-this-to-a-strong-secret-key"
 # Self-signed certificate options
 auto_cert = true
 auto_cert_domain = "localhost"
+
+# ==============================================================================
+# Access Control List (ACL) Configuration
+# ==============================================================================
+# QuicProxy supports access control lists compatible with Hysteria 2 ACL rule syntax.
+# Rules evaluate from top to bottom; the first matching rule takes effect.
+#
+# Rule Syntax:
+#   outbound(address[, proto_port[, hijack_address]])
+#
+# Where:
+#   - outbound: The name of the outbound to use ("direct", "reject", or custom outbound).
+#   - address:  Matching target pattern:
+#       * "all" or "*": matches all destinations.
+#       * Single IP: "1.2.3.4", "2606:4700::1"
+#       * CIDR: "192.168.0.0/16", "2606:4700::/44"
+#       * Domain: "example.com" (exact), "*.example.com" or "example.*" (wildcard)
+#       * Suffix: "suffix:example.com"
+#       * GeoIP: "geoip:cn", "geoip:us", "geoip:private"
+#       * GeoSite: "geosite:google", "geosite:cn", "geosite:google @cn"
+#   - proto_port (optional): Protocol and port filter:
+#       * Omitted or "*": matches all protocols and ports
+#       * "tcp" or "udp": matches protocol on any port
+#       * "tcp/80", "udp/53": matches specific protocol and port
+#       * "*/443": matches any protocol on port 443
+#       * "tcp/8000-9000": matches port range
+#   - hijack_address (optional): Rewrites destination IP to this address (e.g., DNS hijack).
+
+[acl]
+# Load rules from external file OR inline array (mutually exclusive)
+# file = "/etc/quicproxy/acl.txt"
+
+inline = [
+    # Block LAN and private addresses from being proxied
+    "reject(10.0.0.0/8)",
+    "reject(172.16.0.0/12)",
+    "reject(192.168.0.0/16)",
+    "reject(fc00::/7)",
+
+    # Block advertising and tracking domains
+    "reject(geosite:category-ads-all)",
+
+    # Hijack outbound DNS requests on port 53 to local DNS resolver
+    "direct(all, udp/53, 127.0.0.1)",
+
+    # Route domestic traffic directly
+    "direct(geoip:cn)",
+    "direct(geosite:cn)",
+
+    # Default fallback outbound for all other traffic
+    "direct(all)"
+]
+
+# Optional paths to custom GeoIP and GeoSite databases
+# (If omitted, automatically downloads and caches latest Loyalsoldier v2ray-rules-dat)
+# geoip = "/var/lib/quicproxy/geoip.dat"
+# geosite = "/var/lib/quicproxy/geosite.dat"
+# geo_update_interval = "168h" # Default: 7 days (168 hours)
+
+# ==============================================================================
+# Custom Outbounds (Optional)
+# ==============================================================================
+# Built-in outbounds "direct" and "reject" are always available.
+# You can define custom egress outbounds such as direct with specific IP bindings,
+# upstream SOCKS5 proxies, or upstream HTTP CONNECT proxies.
+
+# Example: Custom Direct Outbound binding to specific local IPv4 address
+# [[outbounds]]
+# name = "direct-v4"
+# type = "direct"
+# [outbounds.direct]
+# mode = "4" # "auto", "4", "6", "46", "64"
+# bind_ipv4 = "192.0.2.10"
+
+# Example: Upstream SOCKS5 Proxy
+# [[outbounds]]
+# name = "tor"
+# type = "socks5"
+# [outbounds.socks5]
+# addr = "127.0.0.1:9050"
+# username = ""
+# password = ""
+
+# Example: Upstream HTTP Proxy
+# [[outbounds]]
+# name = "corp-proxy"
+# type = "http"
+# [outbounds.http]
+# url = "http://proxy.corp.internal:8080"
+# insecure = false

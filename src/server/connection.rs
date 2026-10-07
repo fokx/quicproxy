@@ -18,6 +18,7 @@ pub async fn handle_connection(
     rate_limiter: Arc<RateLimiter>,
     anti_probe: Arc<AntiProbeConfig>,
     udp_session_timeout: u64,
+    acl_engine: Arc<crate::acl::ACLEngine>,
 ) -> Result<()> {
     let remote_addr = conn.remote_address();
     tracing::info!("Accepted incoming QUIC connection from {}", remote_addr);
@@ -108,7 +109,7 @@ pub async fn handle_connection(
 
     // Set up UDP session table and datagram receiver loop for this connection
     let session_table = std::sync::Arc::new(
-        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout),
+        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout, Arc::clone(&acl_engine)),
     );
 
     // Spawn datagram receiver loop
@@ -152,12 +153,15 @@ pub async fn handle_connection(
         session_table_reaper.reaper_loop().await;
     });
 
+    let acl_engine_relay = Arc::clone(&acl_engine);
+
     // Accept subsequent proxy streams
     loop {
         match conn.accept_bi().await {
             Ok((send, recv)) => {
+                let acl_clone = Arc::clone(&acl_engine_relay);
                 tokio::spawn(async move {
-                    if let Err(e) = relay::handle_stream(send, recv).await {
+                    if let Err(e) = relay::handle_stream(send, recv, acl_clone).await {
                         tracing::debug!("Proxy stream error: {:#}", e);
                     }
                 });

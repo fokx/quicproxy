@@ -92,6 +92,10 @@ struct ServerArgs {
     /// Inactivity timeout in seconds for UDP sessions
     #[arg(long)]
     udp_session_timeout: Option<u64>,
+
+    /// Path to ACL rule file
+    #[arg(long)]
+    acl_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -167,6 +171,10 @@ struct ClientArgs {
     /// Outbound relay server anchor name or address
     #[arg(long)]
     relay_to_server: Option<String>,
+
+    /// Path to ACL rule file
+    #[arg(long)]
+    acl_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -273,6 +281,13 @@ async fn main() -> Result<()> {
                 config.udp_session_timeout_secs = timeout;
             }
 
+            if let Some(acl_file) = args.acl_file {
+                config.acl = Some(quicproxy::config::AclConfig {
+                    file: Some(acl_file),
+                    ..Default::default()
+                });
+            }
+
             run_server(config).await?;
         }
         Commands::Client(args) => {
@@ -337,6 +352,8 @@ async fn main() -> Result<()> {
                     },
                     socks5_user: args.socks5_user,
                     socks5_password: args.socks5_password,
+                    acl: None,
+                    outbounds: Vec::new(),
                 }
             };
 
@@ -351,6 +368,12 @@ async fn main() -> Result<()> {
             }
             if let Some(relay) = args.relay_to_server {
                 config.routing.relay_to_server = Some(relay);
+            }
+            if let Some(acl_file) = args.acl_file {
+                config.acl = Some(quicproxy::config::AclConfig {
+                    file: Some(acl_file),
+                    ..Default::default()
+                });
             }
 
             run_client(config).await?;

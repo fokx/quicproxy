@@ -30,6 +30,7 @@ pub async fn run_socks5_listener(
     config: Arc<ClientConfig>,
     conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync>,
     datagram_router: Arc<crate::client::udp::DatagramRouter>,
+    acl_engine: Arc<crate::acl::ACLEngine>,
 ) -> Result<()> {
     let listener = TcpListener::bind(config.socks5_listen)
         .await
@@ -43,8 +44,18 @@ pub async fn run_socks5_listener(
                 let config_clone = Arc::clone(&config);
                 let conn_provider_clone = Arc::clone(&conn_provider);
                 let router_clone = Arc::clone(&datagram_router);
+                let acl_clone = Arc::clone(&acl_engine);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_socks5_client(stream, client_addr, config_clone, conn_provider_clone, router_clone).await {
+                    if let Err(e) = handle_socks5_client(
+                        stream,
+                        client_addr,
+                        config_clone,
+                        conn_provider_clone,
+                        router_clone,
+                        acl_clone,
+                    )
+                    .await
+                    {
                         tracing::debug!("SOCKS5 client {} error: {:#}", client_addr, e);
                     }
                 });
@@ -62,6 +73,7 @@ async fn handle_socks5_client(
     config: Arc<ClientConfig>,
     conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync>,
     datagram_router: Arc<crate::client::udp::DatagramRouter>,
+    acl_engine: Arc<crate::acl::ACLEngine>,
 ) -> Result<()> {
     let _ = stream.set_nodelay(true);
 
@@ -157,7 +169,140 @@ async fn handle_socks5_client(
         }
     };
 
-    // Obtain active transport (wait briefly if initial connection handshake is still completing)
+    if cmd == CMD_CONNECT {
+        let (outbound, matched_target) = acl_engine.handle(&target, crate::acl::Protocol::Tcp).await;
+
+        if outbound.name() == "reject" {
+            tracing::debug!("SOCKS5 CONNECT to {} rejected by ACL", target);
+            // REP_CONNECTION_NOT_ALLOWED_BY_RULESET = 0x02
+            stream
+                .write_all(&[SOCKS_VERSION, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
+            bail!("Connection to {} rejected by ACL", target);
+        }
+
+        if outbound.name() != "default" {
+            tracing::debug!(
+                "Routing CONNECT to {} via outbound [{}]",
+                matched_target,
+                outbound.name()
+            );
+            let remote_stream = match outbound.tcp_connect(&matched_target).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed outbound ({}) connection to {}: {}",
+                        outbound.name(),
+                        matched_target,
+                        e
+                    );
+                    stream
+                        .write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await?;
+                    return Err(e);
+                }
+            };
+
+            // Success response to SOCKS5 client
+            stream
+                .write_all(&[SOCKS_VERSION, REP_SUCCESS, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
+
+            let (mut tcp_read, mut tcp_write) = stream.into_split();
+            let (mut rem_read, mut rem_write) = tokio::io::split(remote_stream);
+
+            let client_to_remote = async {
+                let res = tokio::io::copy(&mut tcp_read, &mut rem_write).await;
+                let _ = tokio::io::AsyncWriteExt::shutdown(&mut rem_write).await;
+                res
+            };
+
+            let remote_to_client = async {
+                let res = tokio::io::copy(&mut rem_read, &mut tcp_write).await;
+                let _ = tokio::io::AsyncWriteExt::shutdown(&mut tcp_write).await;
+                res
+            };
+
+            let _ = tokio::join!(client_to_remote, remote_to_client);
+            tracing::trace!("SOCKS5 session finished for target {}", target);
+            return Ok(());
+        }
+
+        // Default outbound: tunnel through upstream proxy server
+        let start_wait = std::time::Instant::now();
+        let transport = loop {
+            if let Some(t) = conn_provider() {
+                break t;
+            }
+            if start_wait.elapsed() > Duration::from_millis(6000) {
+                tracing::warn!("No active proxy transport available to handle SOCKS request");
+                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                bail!("Proxy transport not available");
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        };
+
+        tracing::debug!("SOCKS5 CONNECT request for target {} (final: {})", target, matched_target);
+
+        // Open a new bidirectional stream on the active transport
+        let proxy_stream = match transport.open_stream().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to open stream on transport ({}): {}", transport.mode_name(), e);
+                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                return Err(e);
+            }
+        };
+
+        let (mut stream_read, mut stream_write) = tokio::io::split(proxy_stream);
+
+        // Send ProxyRequest with matched_target (which may be hijacked)
+        let req = ProxyRequest::connect(matched_target);
+        if let Err(e) = write_proxy_request(&mut stream_write, &req).await {
+            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Err(e);
+        }
+
+        // Read ProxyResponse from server
+        let resp = match read_proxy_response(&mut stream_read).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                return Err(e);
+            }
+        };
+
+        if resp.status != STATUS_SUCCESS {
+            tracing::warn!("Server failed proxy request for target {}: status {}", target, resp.status);
+            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Ok(());
+        }
+
+        // Success response to SOCKS5 client
+        stream.write_all(&[SOCKS_VERSION, REP_SUCCESS, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+
+        // Bidirectional stream relay
+        let (mut tcp_read, mut tcp_write) = stream.into_split();
+
+        let client_to_remote = async {
+            let res = tokio::io::copy(&mut tcp_read, &mut stream_write).await;
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream_write).await;
+            res
+        };
+
+        let remote_to_client = async {
+            let res = tokio::io::copy(&mut stream_read, &mut tcp_write).await;
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut tcp_write).await;
+            res
+        };
+
+        let _ = tokio::join!(client_to_remote, remote_to_client);
+
+        tracing::trace!("SOCKS5 session finished for target {}", target);
+        return Ok(());
+    }
+
+    // CMD_UDP_ASSOCIATE
     let start_wait = std::time::Instant::now();
     let transport = loop {
         if let Some(t) = conn_provider() {
@@ -244,8 +389,9 @@ async fn handle_socks5_client(
         // Spawn UDP relay tasks
         let relay_c2s = Arc::clone(&relay);
         let transport_c2s = Arc::clone(&transport);
+        let acl_c2s = Arc::clone(&acl_engine);
         let c2s_handle = tokio::spawn(async move {
-            let _ = relay_c2s.run_client_to_server(transport_c2s).await;
+            let _ = relay_c2s.run_client_to_server(transport_c2s, acl_c2s).await;
         });
 
         let relay_s2c = Arc::clone(&relay);

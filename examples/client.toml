@@ -95,3 +95,26 @@ priority = 2
 # insecure = true
 # weight = 2
 # priority = 3
+
+# ==============================================================================
+# Client-Side Access Control List (ACL) Configuration (Optional)
+# ==============================================================================
+# Filter or route connections locally before sending through proxy tunnels.
+# Outbounds available on client:
+#   - "direct": Connect directly from local client without going through proxy server.
+#   - "reject": Block connection immediately (returns SOCKS5 0x02 error).
+#   - "default": Tunnel through configured upstream QuicProxy servers.
+
+# [acl]
+# file = "/etc/quicproxy/client-acl.txt"
+# inline = [
+#     # Bypass proxy for local LAN and localhost
+#     "direct(127.0.0.0/8)",
+#     "direct(10.0.0.0/8)",
+#     "direct(192.168.0.0/16)",
+#     # Block ads locally
+#     "reject(geosite:category-ads-all)",
+#     # Tunnel everything else through QuicProxy servers
+#     "default(all)"
+# ]
+

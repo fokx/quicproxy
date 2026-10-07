@@ -136,7 +136,11 @@ impl UdpRelay {
             .context("Failed to get local address of UDP socket")
     }
 
-    pub async fn run_client_to_server(&self, transport: Arc<ActiveTransport>) -> Result<()> {
+    pub async fn run_client_to_server(
+        &self,
+        transport: Arc<ActiveTransport>,
+        acl_engine: Arc<crate::acl::ACLEngine>,
+    ) -> Result<()> {
         let mut buf = [0u8; 2048];
         loop {
             let (len, src_addr) = self.relay_socket.recv_from(&mut buf).await?;
@@ -160,9 +164,15 @@ impl UdpRelay {
 
             match parse_socks5_udp_header(data) {
                 Ok((target, payload)) => {
+                    let (outbound, final_target) =
+                        acl_engine.handle(&target, crate::acl::Protocol::Udp).await;
+                    if outbound.name() == "reject" {
+                        debug!("Dropped outgoing UDP datagram to {} due to ACL reject rule", target);
+                        continue;
+                    }
                     let dgram = UdpDatagram {
                         session_id: self.session_id,
-                        target,
+                        target: final_target,
                         payload: payload.to_vec(),
                     };
                     let encoded = dgram.encode();

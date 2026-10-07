@@ -238,7 +238,15 @@ async fn test_auto_fallback_when_udp_blocked() {
             let rl = Arc::clone(&rate_limiter);
             let ap = Arc::clone(&anti_probe);
             tokio::spawn(async move {
-                let _ = quicproxy::server::tcp::handle_tcp_connection(stream, key, rl, ap, 120).await;
+                let _ = quicproxy::server::tcp::handle_tcp_connection(
+                    stream,
+                    key,
+                    rl,
+                    ap,
+                    120,
+                    std::sync::Arc::new(quicproxy::acl::ACLEngine::default()),
+                )
+                .await;
             });
         }
     });

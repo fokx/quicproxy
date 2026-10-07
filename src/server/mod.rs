@@ -113,12 +113,34 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         anti_probe_config.rate_limit_window_secs,
     ));
     let anti_probe = Arc::new(anti_probe_config);
+    let udp_timeout = config.udp_session_timeout_secs;
+
+    let geo_loader: Arc<dyn crate::acl::GeoLoader> = if let Some(ref acl_cfg) = config.acl {
+        Arc::new(crate::acl::DefaultGeoLoader::new(
+            acl_cfg.geoip.clone(),
+            acl_cfg.geosite.clone(),
+            acl_cfg.parse_geo_update_interval(),
+        ))
+    } else {
+        Arc::new(crate::acl::DefaultGeoLoader::new(None, None, None))
+    };
+
+    let rules_str = if let Some(ref acl_cfg) = config.acl {
+        acl_cfg.load_rules_string()?
+    } else {
+        String::new()
+    };
+
+    let acl_engine = Arc::new(
+        crate::acl::ACLEngine::new_from_string(&rules_str, &config.outbounds, geo_loader.as_ref())
+            .await?,
+    );
 
     let auth_key_quic = Arc::clone(&auth_key);
     let masquerade_quic = Arc::clone(&masquerade);
     let rate_limiter_quic = Arc::clone(&rate_limiter);
     let anti_probe_quic = Arc::clone(&anti_probe);
-    let udp_timeout = config.udp_session_timeout_secs;
+    let acl_engine_quic = Arc::clone(&acl_engine);
 
     let quic_task = async move {
         while let Some(incoming) = endpoint.accept().await {
@@ -126,6 +148,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
             let masq_clone = Arc::clone(&masquerade_quic);
             let rate_limiter_clone = Arc::clone(&rate_limiter_quic);
             let anti_probe_clone = Arc::clone(&anti_probe_quic);
+            let acl_clone = Arc::clone(&acl_engine_quic);
 
             tokio::spawn(async move {
                 match incoming.await {
@@ -137,6 +160,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
                             rate_limiter_clone,
                             anti_probe_clone,
                             udp_timeout,
+                            acl_clone,
                         )
                         .await
                         {
@@ -155,6 +179,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     let rate_limiter_tcp = Arc::clone(&rate_limiter);
     let anti_probe_tcp = Arc::clone(&anti_probe);
     let udp_timeout_tcp = config.udp_session_timeout_secs;
+    let acl_engine_tcp = Arc::clone(&acl_engine);
 
     let tcp_task = async move {
         loop {
@@ -163,6 +188,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
                     let auth_key_clone = Arc::clone(&auth_key_tcp);
                     let rate_limiter_clone = Arc::clone(&rate_limiter_tcp);
                     let anti_probe_clone = Arc::clone(&anti_probe_tcp);
+                    let acl_clone = Arc::clone(&acl_engine_tcp);
 
                     tokio::spawn(async move {
                         if let Err(e) = tcp::handle_tcp_connection(
@@ -171,6 +197,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
                             rate_limiter_clone,
                             anti_probe_clone,
                             udp_timeout_tcp,
+                            acl_clone,
                         )
                         .await
                         {

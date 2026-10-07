@@ -46,6 +46,26 @@ pub async fn run_client(mut config: ClientConfig) -> Result<()> {
     let conn_provider: Arc<dyn Fn() -> Option<Arc<ActiveTransport>> + Send + Sync> =
         Arc::new(move || router_for_socks.try_select_transport());
 
+    let acl_engine = if let Some(ref acl_cfg) = config.acl {
+        let rules_str = acl_cfg.load_rules_string()?;
+        if rules_str.trim().is_empty() {
+            Arc::new(crate::acl::ACLEngine::default())
+        } else {
+            let geo_loader = crate::acl::geo::DefaultGeoLoader::new(
+                acl_cfg.geoip.clone(),
+                acl_cfg.geosite.clone(),
+                acl_cfg.parse_geo_update_interval(),
+            );
+            Arc::new(
+                crate::acl::ACLEngine::new_from_string(&rules_str, &config.outbounds, &geo_loader)
+                    .await?,
+            )
+        }
+    } else {
+        Arc::new(crate::acl::ACLEngine::default())
+    };
+
     let config_arc = Arc::new(config);
-    socks5::run_socks5_listener(config_arc, conn_provider, datagram_router).await
+    socks5::run_socks5_listener(config_arc, conn_provider, datagram_router, acl_engine).await
 }
+

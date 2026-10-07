@@ -12,6 +12,7 @@ pub async fn handle_tcp_connection(
     rate_limiter: Arc<RateLimiter>,
     anti_probe: Arc<AntiProbeConfig>,
     udp_session_timeout: u64,
+    acl_engine: Arc<crate::acl::ACLEngine>,
 ) -> Result<()> {
     let peer_addr = stream.peer_addr().context("Failed to get TCP peer address")?;
     tracing::info!("Accepted incoming TCP fallback connection from {}", peer_addr);
@@ -41,7 +42,7 @@ pub async fn handle_tcp_connection(
 
     // Set up UDP session table for datagrams encapsulated over TCP fallback
     let session_table = Arc::new(
-        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout),
+        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout, Arc::clone(&acl_engine)),
     );
 
     // Spawn datagram receiver loop over TCP muxer
@@ -84,10 +85,13 @@ pub async fn handle_tcp_connection(
         session_table_reaper.reaper_loop().await;
     });
 
+    let acl_engine_relay = Arc::clone(&acl_engine);
+
     while let Some(vstream) = muxer.accept_stream().await {
         let (read_half, write_half) = tokio::io::split(vstream);
+        let acl_clone = Arc::clone(&acl_engine_relay);
         tokio::spawn(async move {
-            if let Err(e) = relay::handle_stream(write_half, read_half).await {
+            if let Err(e) = relay::handle_stream(write_half, read_half, acl_clone).await {
                 tracing::debug!("TCP fallback proxy stream error: {:#}", e);
             }
         });

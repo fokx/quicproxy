@@ -19,13 +19,15 @@ pub struct UdpSession {
 pub struct UdpSessionTable {
     sessions: DashMap<u32, Arc<UdpSession>>,
     timeout_secs: u64,
+    acl_engine: Arc<crate::acl::ACLEngine>,
 }
 
 impl UdpSessionTable {
-    pub fn new(timeout_secs: u64) -> Self {
+    pub fn new(timeout_secs: u64, acl_engine: Arc<crate::acl::ACLEngine>) -> Self {
         Self {
             sessions: DashMap::new(),
             timeout_secs,
+            acl_engine,
         }
     }
 
@@ -39,6 +41,15 @@ impl UdpSessionTable {
     where
         F: Fn(Bytes) -> Result<(), String> + Send + Sync + 'static,
     {
+        let (outbound, final_target) = self
+            .acl_engine
+            .handle(&target, crate::acl::Protocol::Udp)
+            .await;
+        if outbound.is_reject() {
+            debug!("UDP datagram to {} rejected by ACL", target);
+            return Ok(());
+        }
+
         let session = if let Some(sess) = self.sessions.get(&session_id) {
             sess.clone()
         } else {
@@ -93,7 +104,7 @@ impl UdpSessionTable {
         };
 
         // Resolve the target address
-        let resolved_addr = match &target {
+        let resolved_addr = match &final_target {
             TargetAddr::Ip(addr) => *addr,
             TargetAddr::Domain(host, port) => {
                 let host_str = format!("{}:{}", host, port);
