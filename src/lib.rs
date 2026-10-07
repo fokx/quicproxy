@@ -6,6 +6,7 @@ pub mod metrics;
 pub mod obfs;
 pub mod outbound;
 pub mod protocol;
+pub mod realm;
 pub mod server;
 pub mod tls;
 pub mod tls_fingerprint;

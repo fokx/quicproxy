@@ -24,23 +24,29 @@ h3-quinn = "0.0.10"
 hex = "0.4.3"
 http = "1.5.0"
 http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server"] }
 idna = "1.1.0"
+igd-next = "0.17.1"
 ipnet = "2.12.2"
 lru = "0.18.5"
+percent-encoding = "2.3.2"
 prost = "0.14.4"
 quinn = "0.11.12"
 rand = "0.10.3"
 rcgen = "0.14.10"
 regex = "1.13.1"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "json"] }
 ring = "0.17.14"
 rustls = "0.23.45"
 rustls-native-certs = "0.8.4"
 rustls-pemfile = "2.2.0"
 rustls-pki-types = "1.15.1"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sha2 = "0.11.0"
 tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

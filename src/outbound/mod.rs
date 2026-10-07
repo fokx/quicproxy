@@ -28,7 +28,10 @@ pub trait Outbound: Send + Sync {
     fn is_reject(&self) -> bool {
         false
     }
-    fn tcp_connect<'a>(&'a self, target: &'a TargetAddr) -> BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>>;
+    fn tcp_connect<'a>(
+        &'a self,
+        target: &'a TargetAddr,
+    ) -> BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>>;
 }
 
 pub fn build_outbound_map(
@@ -51,10 +54,9 @@ pub fn build_outbound_map(
             }
             OutboundType::Reject => Arc::new(RejectOutbound::new(&cfg.name)),
             OutboundType::Socks5 => {
-                let s5 = cfg
-                    .socks5
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Missing socks5 block for outbound {}", cfg.name))?;
+                let s5 = cfg.socks5.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("Missing socks5 block for outbound {}", cfg.name)
+                })?;
                 Arc::new(Socks5Outbound::new(
                     &cfg.name,
                     &s5.addr,
@@ -63,10 +65,9 @@ pub fn build_outbound_map(
                 ))
             }
             OutboundType::Http => {
-                let h = cfg
-                    .http
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Missing http block for outbound {}", cfg.name))?;
+                let h = cfg.http.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("Missing http block for outbound {}", cfg.name)
+                })?;
                 Arc::new(HttpOutbound::new(&cfg.name, &h.url, h.insecure)?)
             }
         };
@@ -82,17 +83,15 @@ pub fn build_outbound_map(
     if !map.contains_key("direct") {
         map.insert(
             "direct".to_string(),
-            Arc::new(DirectOutbound::new(
-                "direct",
-                DirectMode::Auto,
-                None,
-                None,
-            )),
+            Arc::new(DirectOutbound::new("direct", DirectMode::Auto, None, None)),
         );
     }
 
     if !map.contains_key("reject") {
-        map.insert("reject".to_string(), Arc::new(RejectOutbound::new("reject")));
+        map.insert(
+            "reject".to_string(),
+            Arc::new(RejectOutbound::new("reject")),
+        );
     }
 
     let default_ob = if let Some(custom) = map.get("default") {
@@ -124,10 +123,12 @@ mod tests {
 
         let reject = map.get("reject").unwrap();
         assert!(reject.is_reject());
-        assert!(reject
-            .tcp_connect(&TargetAddr::Ip("127.0.0.1:80".parse().unwrap()))
-            .await
-            .is_err());
+        assert!(
+            reject
+                .tcp_connect(&TargetAddr::Ip("127.0.0.1:80".parse().unwrap()))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -175,4 +176,3 @@ mod tests {
         assert!(stream.is_ok());
     }
 }
-

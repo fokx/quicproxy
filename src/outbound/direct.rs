@@ -1,11 +1,11 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::timeout;
 
-use crate::protocol::TargetAddr;
 use super::{AsyncReadWrite, Outbound};
+use crate::protocol::TargetAddr;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -55,17 +55,15 @@ impl DirectOutbound {
 
     async fn resolve_addrs(&self, target: &TargetAddr) -> Result<Vec<SocketAddr>> {
         match target {
-            TargetAddr::Ip(addr) => {
-                match (addr.ip(), self.mode) {
-                    (IpAddr::V4(_), DirectMode::V6Only) => {
-                        bail!("Target {} is IPv4 but mode is IPv6 only", target);
-                    }
-                    (IpAddr::V6(_), DirectMode::V4Only) => {
-                        bail!("Target {} is IPv6 but mode is IPv4 only", target);
-                    }
-                    _ => Ok(vec![*addr]),
+            TargetAddr::Ip(addr) => match (addr.ip(), self.mode) {
+                (IpAddr::V4(_), DirectMode::V6Only) => {
+                    bail!("Target {} is IPv4 but mode is IPv6 only", target);
                 }
-            }
+                (IpAddr::V6(_), DirectMode::V4Only) => {
+                    bail!("Target {} is IPv6 but mode is IPv4 only", target);
+                }
+                _ => Ok(vec![*addr]),
+            },
             TargetAddr::Domain(host, port) => {
                 let host_port = format!("{}:{}", host, port);
                 let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&host_port)
@@ -125,7 +123,9 @@ impl DirectOutbound {
                 if let Some(bind_v4) = self.bind_ipv4 {
                     socket
                         .bind(SocketAddr::new(IpAddr::V4(bind_v4), 0))
-                        .with_context(|| format!("Failed to bind TCP socket to IPv4 {}", bind_v4))?;
+                        .with_context(|| {
+                            format!("Failed to bind TCP socket to IPv4 {}", bind_v4)
+                        })?;
                 }
                 timeout(CONNECT_TIMEOUT, socket.connect(addr))
                     .await
@@ -138,7 +138,9 @@ impl DirectOutbound {
                 if let Some(bind_v6) = self.bind_ipv6 {
                     socket
                         .bind(SocketAddr::new(IpAddr::V6(bind_v6), 0))
-                        .with_context(|| format!("Failed to bind TCP socket to IPv6 {}", bind_v6))?;
+                        .with_context(|| {
+                            format!("Failed to bind TCP socket to IPv6 {}", bind_v6)
+                        })?;
                 }
                 timeout(CONNECT_TIMEOUT, socket.connect(addr))
                     .await
@@ -155,7 +157,10 @@ impl Outbound for DirectOutbound {
         &self.name
     }
 
-    fn tcp_connect<'a>(&'a self, target: &'a TargetAddr) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
+    fn tcp_connect<'a>(
+        &'a self,
+        target: &'a TargetAddr,
+    ) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
         Box::pin(async move {
             let addrs = self.resolve_addrs(target).await?;
             let mut last_err = None;
@@ -179,4 +184,3 @@ impl Default for DirectOutbound {
         Self::new("direct", DirectMode::Auto, None, None)
     }
 }
-

@@ -198,7 +198,10 @@ async fn test_tcp_multiplexing_concurrent_stress() {
 
     for i in 0..CONCURRENCY {
         let handle = tokio::spawn(async move {
-            let payload = format!("Multiplexed concurrent stream request payload #{}! Repeating extra data to ensure varied frame sizes...", i);
+            let payload = format!(
+                "Multiplexed concurrent stream request payload #{}! Repeating extra data to ensure varied frame sizes...",
+                i
+            );
             let echoed = socks5_proxy_echo(socks5_addr, echo_addr, payload.as_bytes()).await;
             assert_eq!(echoed, payload.as_bytes());
         });

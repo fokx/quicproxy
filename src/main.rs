@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use quicproxy::client::run_client;
 use quicproxy::config::{ClientConfig, ServerConfig, TransportMode};
@@ -41,9 +41,9 @@ struct ServerArgs {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Listening address and port (e.g. 0.0.0.0:4433)
+    /// Listening address and port (e.g. 0.0.0.0:4433, or realm://TOKEN@host:port/realm_id)
     #[arg(short, long)]
-    listen: Option<SocketAddr>,
+    listen: Option<String>,
 
     /// Pre-shared authentication key
     #[arg(short = 'k', long)]
@@ -199,8 +199,7 @@ async fn main() -> Result<()> {
     let env_filter = if cli.verbose {
         EnvFilter::new("quicproxy=debug,quinn=info,warn")
     } else {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("quicproxy=info,warn"))
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("quicproxy=info,warn"))
     };
 
     tracing_subscriber::registry()
@@ -213,10 +212,24 @@ async fn main() -> Result<()> {
             let mut config = if let Some(config_path) = args.config {
                 ServerConfig::from_file(config_path)?
             } else {
+                let (listen, realm_listen) = if let Some(ref l) = args.listen {
+                    if quicproxy::realm::is_realm_addr(l) {
+                        ("0.0.0.0:4433".parse().unwrap(), Some(l.clone()))
+                    } else {
+                        (
+                            l.parse().context(
+                                "Invalid listen address (expected IP:port or realm://...)",
+                            )?,
+                            None,
+                        )
+                    }
+                } else {
+                    ("0.0.0.0:4433".parse().unwrap(), None)
+                };
+
                 ServerConfig {
-                    listen: args
-                        .listen
-                        .unwrap_or_else(|| "0.0.0.0:4433".parse().unwrap()),
+                    listen,
+                    realm_listen,
                     auth_key: args
                         .auth_key
                         .clone()
@@ -229,8 +242,13 @@ async fn main() -> Result<()> {
                 }
             };
 
-            if let Some(listen) = args.listen {
-                config.listen = listen;
+            if let Some(ref l) = args.listen {
+                if quicproxy::realm::is_realm_addr(l) {
+                    config.realm_listen = Some(l.clone());
+                } else {
+                    config.listen = l.parse().context("Invalid listen address")?;
+                    config.realm_listen = None;
+                }
             }
             if let Some(auth_key) = args.auth_key {
                 config.auth_key = auth_key;
@@ -242,7 +260,10 @@ async fn main() -> Result<()> {
                 config.tls_key = Some(key);
             }
 
-            if args.masquerade_mode.is_some() || args.masquerade_dir.is_some() || args.masquerade_upstream.is_some() {
+            if args.masquerade_mode.is_some()
+                || args.masquerade_dir.is_some()
+                || args.masquerade_upstream.is_some()
+            {
                 let mut masq = config.masquerade.unwrap_or_default();
                 if let Some(mode) = args.masquerade_mode {
                     masq.mode = mode;
@@ -257,13 +278,14 @@ async fn main() -> Result<()> {
             }
 
             if let Some(key) = args.obfs_key {
-                config.obfuscation = Some(quicproxy::obfs::ObfuscationConfig {
-                    enabled: true,
-                    key,
-                });
+                config.obfuscation =
+                    Some(quicproxy::obfs::ObfuscationConfig { enabled: true, key });
             }
 
-            if args.rate_limit_max.is_some() || args.jitter_min.is_some() || args.jitter_max.is_some() {
+            if args.rate_limit_max.is_some()
+                || args.jitter_min.is_some()
+                || args.jitter_max.is_some()
+            {
                 let mut ap = config.anti_probe.unwrap_or_default();
                 if let Some(rm) = args.rate_limit_max {
                     ap.rate_limit_max_failures = rm;
@@ -303,10 +325,9 @@ async fn main() -> Result<()> {
                     .clone()
                     .context("Auth key must be provided via --auth-key or config file")?;
 
-                let obfuscation = args.obfs_key.map(|key| quicproxy::obfs::ObfuscationConfig {
-                    enabled: true,
-                    key,
-                });
+                let obfuscation = args
+                    .obfs_key
+                    .map(|key| quicproxy::obfs::ObfuscationConfig { enabled: true, key });
 
                 let tls_fingerprint = if args.tls_profile.is_some() || args.alpn.is_some() {
                     let mut fp = quicproxy::tls_fingerprint::TlsFingerprintConfig::default();
@@ -335,6 +356,7 @@ async fn main() -> Result<()> {
                     priority: 1,
                     obfuscation,
                     tls_fingerprint,
+                    realm: None,
                 };
 
                 let socks5_listen = args
@@ -379,7 +401,10 @@ async fn main() -> Result<()> {
             run_client(config).await?;
         }
         Commands::CertGen(args) => {
-            println!("Generating self-signed certificate for '{}'...", args.domain);
+            println!(
+                "Generating self-signed certificate for '{}'...",
+                args.domain
+            );
             let (cert_pem, key_pem, fingerprint) = generate_self_signed(&args.domain)?;
 
             std::fs::write(&args.out_cert, &cert_pem)

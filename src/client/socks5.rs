@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::config::ClientConfig;
 use crate::protocol::{
-    read_proxy_response, write_proxy_request, ProxyRequest, STATUS_SUCCESS, TargetAddr,
+    ProxyRequest, STATUS_SUCCESS, TargetAddr, read_proxy_response, write_proxy_request,
 };
 use crate::transport::ActiveTransport;
 
@@ -36,7 +36,10 @@ pub async fn run_socks5_listener(
         .await
         .with_context(|| format!("Failed to bind SOCKS5 listener on {}", config.socks5_listen))?;
 
-    tracing::info!("SOCKS5 proxy server is listening on {}", config.socks5_listen);
+    tracing::info!(
+        "SOCKS5 proxy server is listening on {}",
+        config.socks5_listen
+    );
 
     loop {
         match listener.accept().await {
@@ -78,20 +81,28 @@ async fn handle_socks5_client(
     let _ = stream.set_nodelay(true);
 
     // 1. Negotiation phase
-    let ver = stream.read_u8().await.context("Failed to read SOCKS version")?;
+    let ver = stream
+        .read_u8()
+        .await
+        .context("Failed to read SOCKS version")?;
     if ver != SOCKS_VERSION {
         bail!("Unsupported SOCKS version: {}", ver);
     }
 
     let nmethods = stream.read_u8().await.context("Failed to read nmethods")? as usize;
     let mut methods = vec![0u8; nmethods];
-    stream.read_exact(&mut methods).await.context("Failed to read methods")?;
+    stream
+        .read_exact(&mut methods)
+        .await
+        .context("Failed to read methods")?;
 
     let require_auth = config.socks5_user.is_some() && config.socks5_password.is_some();
 
     if require_auth {
         if !methods.contains(&METHOD_USER_PASS) {
-            stream.write_all(&[SOCKS_VERSION, METHOD_NO_ACCEPTABLE]).await?;
+            stream
+                .write_all(&[SOCKS_VERSION, METHOD_NO_ACCEPTABLE])
+                .await?;
             bail!("Client does not support username/password auth");
         }
         stream.write_all(&[SOCKS_VERSION, METHOD_USER_PASS]).await?;
@@ -121,14 +132,19 @@ async fn handle_socks5_client(
         stream.write_all(&[0x01, 0x00]).await?;
     } else {
         if !methods.contains(&METHOD_NO_AUTH) {
-            stream.write_all(&[SOCKS_VERSION, METHOD_NO_ACCEPTABLE]).await?;
+            stream
+                .write_all(&[SOCKS_VERSION, METHOD_NO_ACCEPTABLE])
+                .await?;
             bail!("Client does not support NO_AUTH");
         }
         stream.write_all(&[SOCKS_VERSION, METHOD_NO_AUTH]).await?;
     }
 
     // 2. Request phase
-    let ver = stream.read_u8().await.context("Failed to read request version")?;
+    let ver = stream
+        .read_u8()
+        .await
+        .context("Failed to read request version")?;
     if ver != SOCKS_VERSION {
         bail!("Invalid SOCKS request version: {}", ver);
     }
@@ -138,7 +154,20 @@ async fn handle_socks5_client(
 
     if cmd != CMD_CONNECT && cmd != CMD_UDP_ASSOCIATE {
         // Reply with command not supported
-        stream.write_all(&[SOCKS_VERSION, REP_CMD_NOT_SUPPORTED, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        stream
+            .write_all(&[
+                SOCKS_VERSION,
+                REP_CMD_NOT_SUPPORTED,
+                0x00,
+                0x01,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await?;
         bail!("Unsupported SOCKS command: 0x{:02x}", cmd);
     }
 
@@ -164,13 +193,27 @@ async fn handle_socks5_client(
             TargetAddr::Ip(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip_bytes)), port))
         }
         _ => {
-            stream.write_all(&[SOCKS_VERSION, REP_ADDR_NOT_SUPPORTED, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_ADDR_NOT_SUPPORTED,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             bail!("Unsupported ATYP: 0x{:02x}", atyp);
         }
     };
 
     if cmd == CMD_CONNECT {
-        let (outbound, matched_target) = acl_engine.handle(&target, crate::acl::Protocol::Tcp).await;
+        let (outbound, matched_target) =
+            acl_engine.handle(&target, crate::acl::Protocol::Tcp).await;
 
         if outbound.name() == "reject" {
             tracing::debug!("SOCKS5 CONNECT to {} rejected by ACL", target);
@@ -197,7 +240,18 @@ async fn handle_socks5_client(
                         e
                     );
                     stream
-                        .write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .write_all(&[
+                            SOCKS_VERSION,
+                            REP_GENERAL_FAILURE,
+                            0x00,
+                            0x01,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ])
                         .await?;
                     return Err(e);
                 }
@@ -236,20 +290,54 @@ async fn handle_socks5_client(
             }
             if start_wait.elapsed() > Duration::from_millis(6000) {
                 tracing::warn!("No active proxy transport available to handle SOCKS request");
-                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                stream
+                    .write_all(&[
+                        SOCKS_VERSION,
+                        REP_GENERAL_FAILURE,
+                        0x00,
+                        0x01,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ])
+                    .await?;
                 bail!("Proxy transport not available");
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         };
 
-        tracing::debug!("SOCKS5 CONNECT request for target {} (final: {})", target, matched_target);
+        tracing::debug!(
+            "SOCKS5 CONNECT request for target {} (final: {})",
+            target,
+            matched_target
+        );
 
         // Open a new bidirectional stream on the active transport
         let proxy_stream = match transport.open_stream().await {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("Failed to open stream on transport ({}): {}", transport.mode_name(), e);
-                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                tracing::warn!(
+                    "Failed to open stream on transport ({}): {}",
+                    transport.mode_name(),
+                    e
+                );
+                stream
+                    .write_all(&[
+                        SOCKS_VERSION,
+                        REP_GENERAL_FAILURE,
+                        0x00,
+                        0x01,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ])
+                    .await?;
                 return Err(e);
             }
         };
@@ -259,7 +347,20 @@ async fn handle_socks5_client(
         // Send ProxyRequest with matched_target (which may be hijacked)
         let req = ProxyRequest::connect(matched_target);
         if let Err(e) = write_proxy_request(&mut stream_write, &req).await {
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             return Err(e);
         }
 
@@ -267,19 +368,51 @@ async fn handle_socks5_client(
         let resp = match read_proxy_response(&mut stream_read).await {
             Ok(resp) => resp,
             Err(e) => {
-                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                stream
+                    .write_all(&[
+                        SOCKS_VERSION,
+                        REP_GENERAL_FAILURE,
+                        0x00,
+                        0x01,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ])
+                    .await?;
                 return Err(e);
             }
         };
 
         if resp.status != STATUS_SUCCESS {
-            tracing::warn!("Server failed proxy request for target {}: status {}", target, resp.status);
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            tracing::warn!(
+                "Server failed proxy request for target {}: status {}",
+                target,
+                resp.status
+            );
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             return Ok(());
         }
 
         // Success response to SOCKS5 client
-        stream.write_all(&[SOCKS_VERSION, REP_SUCCESS, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        stream
+            .write_all(&[SOCKS_VERSION, REP_SUCCESS, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await?;
 
         // Bidirectional stream relay
         let (mut tcp_read, mut tcp_write) = stream.into_split();
@@ -310,28 +443,59 @@ async fn handle_socks5_client(
         }
         if start_wait.elapsed() > Duration::from_millis(6000) {
             tracing::warn!("No active proxy transport available to handle SOCKS request");
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             bail!("Proxy transport not available");
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     };
 
     if cmd == CMD_UDP_ASSOCIATE {
-        tracing::debug!("SOCKS5 UDP ASSOCIATE request from {} for {}", client_addr, target);
+        tracing::debug!(
+            "SOCKS5 UDP ASSOCIATE request from {} for {}",
+            client_addr,
+            target
+        );
 
         let session_id = NEXT_UDP_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let incoming_rx = datagram_router.register(session_id);
 
         let udp_bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let relay = match crate::client::udp::UdpRelay::new(session_id, udp_bind_addr, incoming_rx).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to bind client UDP relay socket: {}", e);
-                datagram_router.deregister(session_id);
-                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
-                return Err(e);
-            }
-        };
+        let relay =
+            match crate::client::udp::UdpRelay::new(session_id, udp_bind_addr, incoming_rx).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to bind client UDP relay socket: {}", e);
+                    datagram_router.deregister(session_id);
+                    stream
+                        .write_all(&[
+                            SOCKS_VERSION,
+                            REP_GENERAL_FAILURE,
+                            0x00,
+                            0x01,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ])
+                        .await?;
+                    return Err(e);
+                }
+            };
 
         let relay_bound_addr = relay.local_addr()?;
         let relay = Arc::new(relay);
@@ -342,7 +506,20 @@ async fn handle_socks5_client(
             Err(e) => {
                 tracing::warn!("Failed to open control stream on transport: {}", e);
                 datagram_router.deregister(session_id);
-                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                stream
+                    .write_all(&[
+                        SOCKS_VERSION,
+                        REP_GENERAL_FAILURE,
+                        0x00,
+                        0x01,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ])
+                    .await?;
                 return Err(e);
             }
         };
@@ -351,7 +528,20 @@ async fn handle_socks5_client(
         let req = ProxyRequest::udp_associate(target.clone());
         if let Err(e) = write_proxy_request(&mut stream_write, &req).await {
             datagram_router.deregister(session_id);
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             return Err(e);
         }
 
@@ -359,14 +549,40 @@ async fn handle_socks5_client(
             Ok(resp) => resp,
             Err(e) => {
                 datagram_router.deregister(session_id);
-                stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+                stream
+                    .write_all(&[
+                        SOCKS_VERSION,
+                        REP_GENERAL_FAILURE,
+                        0x00,
+                        0x01,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ])
+                    .await?;
                 return Err(e);
             }
         };
 
         if resp.status != STATUS_SUCCESS {
             datagram_router.deregister(session_id);
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             return Ok(());
         }
 
@@ -416,8 +632,25 @@ async fn handle_socks5_client(
     let proxy_stream = match transport.open_stream().await {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("Failed to open stream on transport ({}): {}", transport.mode_name(), e);
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            tracing::warn!(
+                "Failed to open stream on transport ({}): {}",
+                transport.mode_name(),
+                e
+            );
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             return Err(e);
         }
     };
@@ -427,7 +660,20 @@ async fn handle_socks5_client(
     // Send ProxyRequest
     let req = ProxyRequest::connect(target.clone());
     if let Err(e) = write_proxy_request(&mut stream_write, &req).await {
-        stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        stream
+            .write_all(&[
+                SOCKS_VERSION,
+                REP_GENERAL_FAILURE,
+                0x00,
+                0x01,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await?;
         return Err(e);
     }
 
@@ -435,19 +681,51 @@ async fn handle_socks5_client(
     let resp = match read_proxy_response(&mut stream_read).await {
         Ok(resp) => resp,
         Err(e) => {
-            stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            stream
+                .write_all(&[
+                    SOCKS_VERSION,
+                    REP_GENERAL_FAILURE,
+                    0x00,
+                    0x01,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ])
+                .await?;
             return Err(e);
         }
     };
 
     if resp.status != STATUS_SUCCESS {
-        tracing::warn!("Server failed proxy request for target {}: status {}", target, resp.status);
-        stream.write_all(&[SOCKS_VERSION, REP_GENERAL_FAILURE, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        tracing::warn!(
+            "Server failed proxy request for target {}: status {}",
+            target,
+            resp.status
+        );
+        stream
+            .write_all(&[
+                SOCKS_VERSION,
+                REP_GENERAL_FAILURE,
+                0x00,
+                0x01,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await?;
         return Ok(());
     }
 
     // Success response to SOCKS5 client
-    stream.write_all(&[SOCKS_VERSION, REP_SUCCESS, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+    stream
+        .write_all(&[SOCKS_VERSION, REP_SUCCESS, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
 
     // Bidirectional stream relay
     let (mut tcp_read, mut tcp_write) = stream.into_split();

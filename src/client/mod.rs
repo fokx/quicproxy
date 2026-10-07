@@ -5,9 +5,9 @@ pub mod udp;
 use anyhow::Result;
 use std::sync::Arc;
 
+use self::router::MultiServerRouter;
 use crate::config::ClientConfig;
 use crate::transport::ActiveTransport;
-use self::router::MultiServerRouter;
 
 pub async fn run_client(mut config: ClientConfig) -> Result<()> {
     config.validate_and_normalize()?;
@@ -29,16 +29,26 @@ pub async fn run_client(mut config: ClientConfig) -> Result<()> {
         config.routing.mode, config.routing.strategy
     );
     if let Some(ref anchor) = config.routing.relay_to_server {
-        println!("  Outbound IP Anchor: Relaying all egress traffic via [{}]", anchor);
+        println!(
+            "  Outbound IP Anchor: Relaying all egress traffic via [{}]",
+            anchor
+        );
     } else {
         println!("  Outbound IP Anchor: None (Direct exit from each server)");
     }
     println!("  Upstream Servers ({} total):", config.servers.len());
     for s in &config.servers {
-        println!(
-            "    - [{}] {}:{} (transport: {}, weight: {}, priority: {})",
-            s.name, s.server_addr, s.server_port, s.transport, s.weight, s.priority
-        );
+        if s.is_realm() {
+            println!(
+                "    - [{}] {} (realm P2P, weight: {}, priority: {})",
+                s.name, s.server_addr, s.weight, s.priority
+            );
+        } else {
+            println!(
+                "    - [{}] {}:{} (transport: {}, weight: {}, priority: {})",
+                s.name, s.server_addr, s.server_port, s.transport, s.weight, s.priority
+            );
+        }
     }
     println!("================================================================================");
 
@@ -68,4 +78,3 @@ pub async fn run_client(mut config: ClientConfig) -> Result<()> {
     let config_arc = Arc::new(config);
     socks5::run_socks5_listener(config_arc, conn_provider, datagram_router, acl_engine).await
 }
-

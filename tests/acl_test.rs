@@ -1,11 +1,11 @@
 use anyhow::Result;
 use quicproxy::acl::geo::{DefaultGeoLoader, GeoLoader};
 use quicproxy::acl::matcher::HostInfo;
-use quicproxy::acl::rule::{parse_text_rules, Protocol};
-use quicproxy::acl::{compile, ACLEngine, DEFAULT_ACL_CACHE_SIZE};
+use quicproxy::acl::rule::{Protocol, parse_text_rules};
+use quicproxy::acl::{ACLEngine, DEFAULT_ACL_CACHE_SIZE, compile};
+use quicproxy::outbound::Outbound;
 use quicproxy::outbound::direct::{DirectMode, DirectOutbound};
 use quicproxy::outbound::reject::RejectOutbound;
-use quicproxy::outbound::Outbound;
 use quicproxy::protocol::TargetAddr;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -376,7 +376,10 @@ async fn test_acl_cache_behavior() -> Result<()> {
         "direct".to_string(),
         Arc::new(DirectOutbound::new("direct", DirectMode::Auto, None, None)),
     );
-    ob_map.insert("reject".to_string(), Arc::new(RejectOutbound::new("reject")));
+    ob_map.insert(
+        "reject".to_string(),
+        Arc::new(RejectOutbound::new("reject")),
+    );
 
     let rule_set = compile(&text_rules, &ob_map, 2, &dummy_loader).await?;
 
@@ -416,7 +419,10 @@ async fn test_acl_engine_handle_and_hijack() -> Result<()> {
     let (ob, final_target) = engine.handle(&target, Protocol::Tcp).await;
 
     assert_eq!(ob.name(), "direct");
-    assert_eq!(final_target, TargetAddr::Ip("127.0.0.1:80".parse().unwrap()));
+    assert_eq!(
+        final_target,
+        TargetAddr::Ip("127.0.0.1:80".parse().unwrap())
+    );
 
     Ok(())
 }
@@ -451,9 +457,8 @@ async fn test_client_socks5_with_acl_rules() -> Result<()> {
     let socks5_addr = socks5_listener.local_addr()?;
     drop(socks5_listener);
 
-    let acl_rules = format!(
-        "reject(127.0.0.99)\ndirect(10.0.0.1, *, 127.0.0.1)\ndirect(127.0.0.1)\n"
-    );
+    let acl_rules =
+        format!("reject(127.0.0.99)\ndirect(10.0.0.1, *, 127.0.0.1)\ndirect(127.0.0.1)\n");
 
     let client_config = quicproxy::config::ClientConfig {
         socks5_listen: socks5_addr,
@@ -492,7 +497,16 @@ async fn test_client_socks5_with_acl_rules() -> Result<()> {
 
         // SOCKS5 CONNECT to 127.0.0.99:9999
         let req = [
-            0x05, 0x01, 0x00, 0x01, 127, 0, 0, 99, (9999u16 >> 8) as u8, (9999u16 & 0xff) as u8,
+            0x05,
+            0x01,
+            0x00,
+            0x01,
+            127,
+            0,
+            0,
+            99,
+            (9999u16 >> 8) as u8,
+            (9999u16 & 0xff) as u8,
         ];
         client.write_all(&req).await?;
         let mut reply = [0u8; 10];
@@ -511,7 +525,16 @@ async fn test_client_socks5_with_acl_rules() -> Result<()> {
 
         let port = echo_addr.port();
         let req = [
-            0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, (port >> 8) as u8, (port & 0xff) as u8,
+            0x05,
+            0x01,
+            0x00,
+            0x01,
+            127,
+            0,
+            0,
+            1,
+            (port >> 8) as u8,
+            (port & 0xff) as u8,
         ];
         client.write_all(&req).await?;
         let mut reply = [0u8; 10];
@@ -535,7 +558,16 @@ async fn test_client_socks5_with_acl_rules() -> Result<()> {
 
         let port = echo_addr.port();
         let req = [
-            0x05, 0x01, 0x00, 0x01, 10, 0, 0, 1, (port >> 8) as u8, (port & 0xff) as u8,
+            0x05,
+            0x01,
+            0x00,
+            0x01,
+            10,
+            0,
+            0,
+            1,
+            (port >> 8) as u8,
+            (port & 0xff) as u8,
         ];
         client.write_all(&req).await?;
         let mut reply = [0u8; 10];

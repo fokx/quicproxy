@@ -1,11 +1,11 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::protocol::TargetAddr;
 use super::{AsyncReadWrite, Outbound};
+use crate::protocol::TargetAddr;
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -77,7 +77,10 @@ impl Outbound for HttpOutbound {
         &self.name
     }
 
-    fn tcp_connect<'a>(&'a self, target: &'a TargetAddr) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
+    fn tcp_connect<'a>(
+        &'a self,
+        target: &'a TargetAddr,
+    ) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
         Box::pin(async move {
             let mut stream = timeout(HTTP_CONNECT_TIMEOUT, TcpStream::connect(&self.proxy_addr))
                 .await
@@ -114,10 +117,7 @@ impl Outbound for HttpOutbound {
             let resp_str = String::from_utf8_lossy(&buf);
             let first_line = resp_str.lines().next().unwrap_or("");
             if !first_line.contains(" 200 ") && !first_line.ends_with(" 200") {
-                bail!(
-                    "HTTP proxy rejected CONNECT request: {}",
-                    first_line
-                );
+                bail!("HTTP proxy rejected CONNECT request: {}", first_line);
             }
 
             Ok(Box::new(stream) as Box<dyn AsyncReadWrite>)

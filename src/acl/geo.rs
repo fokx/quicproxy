@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -136,14 +136,22 @@ pub fn load_geoip_file<P: AsRef<Path>>(path: P) -> Result<HashMap<String, GeoIp>
 }
 
 pub fn load_geosite_file<P: AsRef<Path>>(path: P) -> Result<HashMap<String, GeoSite>> {
-    let bs = fs::read(path.as_ref())
-        .with_context(|| format!("Failed to read GeoSite file from {}", path.as_ref().display()))?;
+    let bs = fs::read(path.as_ref()).with_context(|| {
+        format!(
+            "Failed to read GeoSite file from {}",
+            path.as_ref().display()
+        )
+    })?;
     load_geosite_from_bytes(&bs)
 }
 
 pub trait GeoLoader: Send + Sync {
-    fn load_geoip<'a>(&'a self) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoIp>>>>;
-    fn load_geosite<'a>(&'a self) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoSite>>>>;
+    fn load_geoip<'a>(
+        &'a self,
+    ) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoIp>>>>;
+    fn load_geosite<'a>(
+        &'a self,
+    ) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoSite>>>>;
 }
 
 pub struct DefaultGeoLoader {
@@ -209,7 +217,11 @@ impl DefaultGeoLoader {
                 .build()
                 .context("Failed to create HTTP client for geo download")?;
 
-            let resp = client.get(url).send().await.context("HTTP download failed")?;
+            let resp = client
+                .get(url)
+                .send()
+                .await
+                .context("HTTP download failed")?;
             if !resp.status().is_success() {
                 bail!("HTTP download returned status {}", resp.status());
             }
@@ -240,10 +252,7 @@ impl DefaultGeoLoader {
         if let Err(e) = download_result {
             warn!("Failed to download geo database from {}: {:#}", url, e);
             if path.exists() {
-                warn!(
-                    "Falling back to existing local file at {}",
-                    path.display()
-                );
+                warn!("Falling back to existing local file at {}", path.display());
                 return Ok(());
             }
             return Err(e);
@@ -253,9 +262,10 @@ impl DefaultGeoLoader {
     }
 }
 
-
 impl GeoLoader for DefaultGeoLoader {
-    fn load_geoip<'a>(&'a self) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoIp>>>> {
+    fn load_geoip<'a>(
+        &'a self,
+    ) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoIp>>>> {
         Box::pin(async move {
             if let Some(cached) = self.geoip_cache.get() {
                 return Ok(Arc::clone(cached));
@@ -269,7 +279,8 @@ impl GeoLoader for DefaultGeoLoader {
                         return Ok(arc);
                     }
                 }
-                self.ensure_file(&self.geoip_path, DEFAULT_GEOIP_URL, true).await?;
+                self.ensure_file(&self.geoip_path, DEFAULT_GEOIP_URL, true)
+                    .await?;
             }
 
             let map = load_geoip_file(&self.geoip_path)?;
@@ -279,7 +290,9 @@ impl GeoLoader for DefaultGeoLoader {
         })
     }
 
-    fn load_geosite<'a>(&'a self) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoSite>>>> {
+    fn load_geosite<'a>(
+        &'a self,
+    ) -> crate::outbound::BoxFuture<'a, Result<Arc<HashMap<String, GeoSite>>>> {
         Box::pin(async move {
             if let Some(cached) = self.geosite_cache.get() {
                 return Ok(Arc::clone(cached));
@@ -293,7 +306,8 @@ impl GeoLoader for DefaultGeoLoader {
                         return Ok(arc);
                     }
                 }
-                self.ensure_file(&self.geosite_path, DEFAULT_GEOSITE_URL, false).await?;
+                self.ensure_file(&self.geosite_path, DEFAULT_GEOSITE_URL, false)
+                    .await?;
             }
 
             let map = load_geosite_file(&self.geosite_path)?;

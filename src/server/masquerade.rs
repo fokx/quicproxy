@@ -102,7 +102,11 @@ impl MasqueradeHandler {
 
     /// Handles a client connection stream by serving an HTTP/3 response on `auth_send`
     /// and opening the server's HTTP/3 control stream.
-    pub async fn handle_quic_stream(&self, conn: &quinn::Connection, mut send: quinn::SendStream) -> Result<()> {
+    pub async fn handle_quic_stream(
+        &self,
+        conn: &quinn::Connection,
+        mut send: quinn::SendStream,
+    ) -> Result<()> {
         let remote_addr = conn.remote_address();
         tracing::info!("Serving HTTP/3 masquerade response to {}", remote_addr);
 
@@ -125,13 +129,12 @@ impl MasqueradeHandler {
                 let (status, mime, body) = self.proxy_request("/").await;
                 (status, mime, body.to_vec())
             }
-            MasqueradeMode::Off => {
-                (StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec())
-            }
+            MasqueradeMode::Off => (StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec()),
         };
 
         // 3. Write HTTP/3 response frames to send stream
-        self.send_h3_response(&mut send, status, content_type, &body).await?;
+        self.send_h3_response(&mut send, status, content_type, &body)
+            .await?;
 
         // 4. In background, if the client sends additional HTTP/3 request streams on this connection, serve them too
         let conn_clone = conn.clone();
@@ -192,7 +195,10 @@ impl MasqueradeHandler {
 
     pub async fn handle_quic_connection(&self, conn: quinn::Connection) -> Result<()> {
         let remote_addr = conn.remote_address();
-        tracing::info!("Diverting connection from {} to HTTP/3 masquerade engine", remote_addr);
+        tracing::info!(
+            "Diverting connection from {} to HTTP/3 masquerade engine",
+            remote_addr
+        );
 
         let h3_conn = h3_quinn::Connection::new(conn);
         let mut server = h3::server::builder()
@@ -204,12 +210,21 @@ impl MasqueradeHandler {
             let (req, mut stream) = match resolver.resolve_request().await {
                 Ok(pair) => pair,
                 Err(e) => {
-                    tracing::debug!("Failed to resolve incoming HTTP/3 request from {}: {}", remote_addr, e);
+                    tracing::debug!(
+                        "Failed to resolve incoming HTTP/3 request from {}: {}",
+                        remote_addr,
+                        e
+                    );
                     continue;
                 }
             };
             let path = req.uri().path().to_string();
-            tracing::debug!("HTTP/3 prober request from {}: {} {}", remote_addr, req.method(), path);
+            tracing::debug!(
+                "HTTP/3 prober request from {}: {} {}",
+                remote_addr,
+                req.method(),
+                path
+            );
 
             match self.config.mode {
                 MasqueradeMode::FileServer => {
@@ -241,9 +256,7 @@ impl MasqueradeHandler {
                     stream.finish().await?;
                 }
                 MasqueradeMode::Off => {
-                    let resp = Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(())?;
+                    let resp = Response::builder().status(StatusCode::NOT_FOUND).body(())?;
                     stream.send_response(resp).await?;
                     stream.finish().await?;
                 }
@@ -259,7 +272,11 @@ impl MasqueradeHandler {
         let dir = match &self.config.static_dir {
             Some(d) => d,
             None => {
-                return (StatusCode::OK, "text/html; charset=utf-8", Bytes::from_static(default_html));
+                return (
+                    StatusCode::OK,
+                    "text/html; charset=utf-8",
+                    Bytes::from_static(default_html),
+                );
             }
         };
 
@@ -272,7 +289,11 @@ impl MasqueradeHandler {
 
         // Prevent directory traversal
         if rel_path.contains("..") {
-            return (StatusCode::FORBIDDEN, "text/plain", Bytes::from_static(b"Forbidden"));
+            return (
+                StatusCode::FORBIDDEN,
+                "text/plain",
+                Bytes::from_static(b"Forbidden"),
+            );
         }
 
         let full_path = dir.join(rel_path);
@@ -282,17 +303,31 @@ impl MasqueradeHandler {
                     let mime = guess_mime_type(&full_path);
                     (StatusCode::OK, mime, Bytes::from(content))
                 }
-                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "text/plain", Bytes::from_static(b"Error reading file")),
+                Err(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "text/plain",
+                    Bytes::from_static(b"Error reading file"),
+                ),
             }
         } else {
-            (StatusCode::NOT_FOUND, "text/html; charset=utf-8", Bytes::from_static(b"<html><body><h1>404 Not Found</h1></body></html>"))
+            (
+                StatusCode::NOT_FOUND,
+                "text/html; charset=utf-8",
+                Bytes::from_static(b"<html><body><h1>404 Not Found</h1></body></html>"),
+            )
         }
     }
 
     async fn proxy_request(&self, path: &str) -> (StatusCode, &'static str, Bytes) {
         let upstream = match &self.config.upstream_url {
             Some(u) => u.trim_end_matches('/'),
-            None => return (StatusCode::BAD_GATEWAY, "text/plain", Bytes::from_static(b"Bad Gateway: No upstream URL")),
+            None => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    "text/plain",
+                    Bytes::from_static(b"Bad Gateway: No upstream URL"),
+                );
+            }
         };
 
         let target_url = format!("{}{}", upstream, path);
@@ -316,21 +351,36 @@ impl MasqueradeHandler {
 
                     match resp.bytes().await {
                         Ok(b) => (status, mime, b),
-                        Err(_) => (StatusCode::BAD_GATEWAY, "text/plain", Bytes::from_static(b"Error reading upstream response")),
+                        Err(_) => (
+                            StatusCode::BAD_GATEWAY,
+                            "text/plain",
+                            Bytes::from_static(b"Error reading upstream response"),
+                        ),
                     }
                 }
                 Err(e) => {
                     tracing::warn!("Masquerade reverse proxy upstream fetch failed: {}", e);
-                    (StatusCode::BAD_GATEWAY, "text/plain", Bytes::from_static(b"Bad Gateway"))
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "text/plain",
+                        Bytes::from_static(b"Bad Gateway"),
+                    )
                 }
             }
         } else {
-            (StatusCode::BAD_GATEWAY, "text/plain", Bytes::from_static(b"Bad Gateway: HTTP client not initialized"))
+            (
+                StatusCode::BAD_GATEWAY,
+                "text/plain",
+                Bytes::from_static(b"Bad Gateway: HTTP client not initialized"),
+            )
         }
     }
 }
 
-async fn write_varint<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, val: u64) -> std::io::Result<()> {
+async fn write_varint<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    val: u64,
+) -> std::io::Result<()> {
     if val < 64 {
         w.write_u8(val as u8).await
     } else if val < 16384 {

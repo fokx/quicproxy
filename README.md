@@ -460,6 +460,111 @@ quicproxy client -c client.toml --acl-file /path/to/client-rules.txt
 
 ---
 
+## Realms (Peer-to-Peer NAT Hole Punching)
+
+QuicProxy supports **Realms**, a peer-to-peer NAT traversal mode modeled after and wire-compatible with **Hysteria 2 Realm**.
+
+Realms allows a QuicProxy server behind residential NAT, carrier-grade NAT (CGNAT), or firewall to be reached **without a public IP address or manual port forwarding**. A lightweight HTTP/SSE rendezvous server introduces the server and client to each other, after which they perform bidirectional UDP hole punching to establish a direct, multiplexed QUIC tunnel. Once the hole is open, the rendezvous server is completely out of the path — all proxy data flows directly peer-to-peer.
+
+### How It Works
+
+```
+  +------------------+         +--------------------+         +------------------+
+  |  Client (NAT B)  |         | Rendezvous Service |         |  Server (NAT A)  |
+  +------------------+         +--------------------+         +------------------+
+           |                             |                             |
+           |----- 1. STUN Discovery ---->|                             |
+           |                             |<---- 1. STUN Discovery -----|
+           |                             |                             |
+           |                             |<---- 2. Register Realm -----|
+           |                             |      (Hold SSE Event Stream)|
+           |                             |                             |
+           |----- 3. Connect Request --->|                             |
+           |      (Client Candidates)    |----- 4. SSE Punch Event --->|
+           |<---- 5. Server Candidates --|                             |
+           |                             |                             |
+           |============ 6. Bidirectional UDP Hole Punch =============|
+           |             (Encrypted HYRLMv1 Hello / Ack)               |
+           |                                                           |
+           |============ 7. Direct QUIC Tunnel Established ============|
+           |             (Normal Proxying, zero relay latency)         |
+```
+
+1. **Discovery**: Server and client query RFC 5389 STUN servers (and optionally UPnP gateway port mapping) to discover their external candidate IP:port mappings.
+2. **Registration**: Server registers its candidates with the rendezvous server and maintains an open SSE (Server-Sent Events) stream while sending periodic heartbeats.
+3. **Coordination**: When a client dials the realm, it posts its candidates to the rendezvous server. The rendezvous pushes them to the server over the SSE stream and replies with the server's candidates.
+4. **UDP Hole Punching**: Both sides immediately send obfuscated `HYRLMv1` UDP punch packets to each other's candidate addresses (including symmetric NAT port-group expansion).
+5. **Direct QUIC**: Once the punch is confirmed, Quinn initiates a standard QUIC TLS 1.3 handshake directly over the opened hole. Salamander packet obfuscation remains fully supported.
+
+### URI Scheme
+
+Realm endpoints use standard Realm URLs:
+
+- `realm://[TOKEN@]host[:port]/realm_id[?stun=s1,s2&lport=N]` (HTTPS rendezvous, default port 443)
+- `realm+http://[TOKEN@]host[:port]/realm_id[?stun=s1,s2&lport=N]` (HTTP rendezvous, default port 80)
+
+Parameters:
+- `TOKEN`: Rendezvous authentication token (optional if rendezvous does not require auth).
+- `realm_id`: Unique identifier for the realm (single URL path segment).
+- `stun`: Comma-separated list of STUN servers (optional, falls back to Google/Cloudflare STUN servers).
+- `lport`: Local UDP bind port (optional, binds ephemeral `0` if omitted).
+
+### Server Setup
+
+Run directly from the command line:
+
+```bash
+quicproxy server \
+  --listen "realm://my-token@rendezvous.example.com/home-server" \
+  --auth-key "my-strong-password"
+```
+
+Or configure via `server.toml`:
+
+```toml
+listen = "realm://my-token@rendezvous.example.com/home-server"
+auth_key = "my-strong-password"
+
+[realm]
+stun = ["stun.l.google.com:19302", "stun.cloudflare.com:3478"]
+stun_timeout = "3s"
+punch_timeout = "5s"
+ip_mode = "dual" # "v4", "v6", or "dual"
+
+[realm.port_mapping]
+enabled = true
+timeout = "3s"
+lifetime = "2h"
+```
+
+### Client Setup
+
+Connect via CLI:
+
+```bash
+quicproxy client \
+  --server-addr "realm://my-token@rendezvous.example.com/home-server" \
+  --auth-key "my-strong-password" \
+  --cert-fingerprint "<SERVER_SHA256_FINGERPRINT>" \
+  --socks5-listen 127.0.0.1:1080
+```
+
+Or configure via `client.toml` (compatible with multi-server aggregation and resilient routing):
+
+```toml
+socks5_listen = "127.0.0.1:1080"
+
+[[servers]]
+name = "home-nas"
+server_addr = "realm://my-token@rendezvous.example.com/home-server"
+auth_key = "my-strong-password"
+cert_fingerprint = "<SERVER_SHA256_FINGERPRINT>"
+weight = 1
+priority = 1
+```
+
+---
+
 ## License
 
 Licensed under the Apache License, Version 2.0 (the "License");

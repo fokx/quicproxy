@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-use ring::hmac::{Key, HMAC_SHA256, sign, verify};
+use anyhow::{Result, anyhow};
+use ring::hmac::{HMAC_SHA256, Key, sign, verify};
 
 pub const TLS_EXPORTER_LABEL: &[u8] = b"quicproxy-auth-v1";
 
@@ -45,5 +45,9 @@ pub fn verify_auth_token(
     conn.export_keying_material(&mut exporter_secret, TLS_EXPORTER_LABEL, b"")
         .map_err(|_| anyhow!("Failed to export TLS keying material from QUIC connection"))?;
 
-    Ok(verify_auth_token_from_secret(&exporter_secret, auth_key, received_token))
+    Ok(verify_auth_token_from_secret(
+        &exporter_secret,
+        auth_key,
+        received_token,
+    ))
 }

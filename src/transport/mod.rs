@@ -12,10 +12,7 @@ use self::tcp::{TcpTransport, VirtualStream};
 
 /// Unified bidirectional stream abstraction for both QUIC and TCP multiplexed streams.
 pub enum ProxyStream {
-    Quic {
-        send: SendStream,
-        recv: RecvStream,
-    },
+    Quic { send: SendStream, recv: RecvStream },
     Tcp(VirtualStream),
 }
 
@@ -39,7 +36,9 @@ impl AsyncWrite for ProxyStream {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         match *self {
-            ProxyStream::Quic { ref mut send, .. } => AsyncWrite::poll_write(Pin::new(send), cx, buf),
+            ProxyStream::Quic { ref mut send, .. } => {
+                AsyncWrite::poll_write(Pin::new(send), cx, buf)
+            }
             ProxyStream::Tcp(ref mut vstream) => AsyncWrite::poll_write(Pin::new(vstream), cx, buf),
         }
     }

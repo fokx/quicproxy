@@ -114,7 +114,8 @@ async fn test_udp_associate_quic() {
         .expect("Error receiving UDP packet");
 
     assert_eq!(from_addr, relay_addr);
-    let (parsed_target, payload) = quicproxy::client::udp::parse_socks5_udp_header(&recv_buf[..n]).unwrap();
+    let (parsed_target, payload) =
+        quicproxy::client::udp::parse_socks5_udp_header(&recv_buf[..n]).unwrap();
     assert_eq!(parsed_target, target_addr);
     assert_eq!(payload, msg);
 }
@@ -183,7 +184,8 @@ async fn test_udp_associate_tcp_fallback() {
         .expect("Error receiving UDP packet");
 
     assert_eq!(from_addr, relay_addr);
-    let (parsed_target, payload) = quicproxy::client::udp::parse_socks5_udp_header(&recv_buf[..n]).unwrap();
+    let (parsed_target, payload) =
+        quicproxy::client::udp::parse_socks5_udp_header(&recv_buf[..n]).unwrap();
     assert_eq!(parsed_target, target_addr);
     assert_eq!(payload, msg);
 }
@@ -248,8 +250,15 @@ async fn test_udp_association_lifetime() {
     let _ = client_sock.send_to(&packet, relay_addr).await;
 
     let mut recv_buf = [0u8; 512];
-    let res = timeout(Duration::from_millis(500), client_sock.recv_from(&mut recv_buf)).await;
-    assert!(res.is_err(), "Expected timeout since UDP association terminated");
+    let res = timeout(
+        Duration::from_millis(500),
+        client_sock.recv_from(&mut recv_buf),
+    )
+    .await;
+    assert!(
+        res.is_err(),
+        "Expected timeout since UDP association terminated"
+    );
 }
 
 #[tokio::test]
@@ -335,12 +344,8 @@ async fn test_tls_fingerprint_alpn() {
         cipher_profile: "chrome".to_string(),
     };
 
-    let client_config_res = quicproxy::tls::make_client_config_with_fingerprint(
-        true,
-        None,
-        None,
-        Some(&fp_config),
-    );
+    let client_config_res =
+        quicproxy::tls::make_client_config_with_fingerprint(true, None, None, Some(&fp_config));
 
     assert!(client_config_res.is_ok());
 }
@@ -349,31 +354,91 @@ async fn test_tls_fingerprint_alpn() {
 async fn test_metrics_counting() {
     let metrics = Arc::new(quicproxy::metrics::Metrics::new());
 
-    assert_eq!(metrics.active_tcp_streams.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(metrics.active_udp_sessions.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        metrics
+            .active_tcp_streams
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        metrics
+            .active_udp_sessions
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 
     metrics.inc_active_tcp_streams();
     metrics.inc_active_tcp_streams();
-    assert_eq!(metrics.active_tcp_streams.load(std::sync::atomic::Ordering::Relaxed), 2);
-    assert_eq!(metrics.total_tcp_streams.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(
+        metrics
+            .active_tcp_streams
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        metrics
+            .total_tcp_streams
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
 
     metrics.dec_active_tcp_streams();
-    assert_eq!(metrics.active_tcp_streams.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(metrics.total_tcp_streams.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(
+        metrics
+            .active_tcp_streams
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics
+            .total_tcp_streams
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
 
     metrics.inc_active_udp_sessions();
-    assert_eq!(metrics.active_udp_sessions.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(metrics.total_udp_sessions.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        metrics
+            .active_udp_sessions
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics
+            .total_udp_sessions
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 
     metrics.add_bytes_sent(1024);
     metrics.add_bytes_received(2048);
-    assert_eq!(metrics.bytes_sent.load(std::sync::atomic::Ordering::Relaxed), 1024);
-    assert_eq!(metrics.bytes_received.load(std::sync::atomic::Ordering::Relaxed), 2048);
+    assert_eq!(
+        metrics
+            .bytes_sent
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1024
+    );
+    assert_eq!(
+        metrics
+            .bytes_received
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2048
+    );
 
     metrics.inc_datagrams_sent();
     metrics.inc_datagrams_received();
-    assert_eq!(metrics.datagrams_sent.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(metrics.datagrams_received.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        metrics
+            .datagrams_sent
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics
+            .datagrams_received
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 
     // Verify log_summary executes without panic
     metrics.log_summary();

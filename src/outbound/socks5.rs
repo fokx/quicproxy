@@ -1,12 +1,12 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::protocol::TargetAddr;
 use super::{AsyncReadWrite, Outbound};
+use crate::protocol::TargetAddr;
 
 const SOCKS5_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -38,7 +38,10 @@ impl Outbound for Socks5Outbound {
         &self.name
     }
 
-    fn tcp_connect<'a>(&'a self, target: &'a TargetAddr) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
+    fn tcp_connect<'a>(
+        &'a self,
+        target: &'a TargetAddr,
+    ) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
         Box::pin(async move {
             let stream = timeout(SOCKS5_TIMEOUT, TcpStream::connect(&self.addr))
                 .await

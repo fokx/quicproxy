@@ -9,6 +9,9 @@ pub struct ServerConfig {
     #[serde(default = "default_server_listen")]
     pub listen: SocketAddr,
 
+    #[serde(default)]
+    pub realm_listen: Option<String>,
+
     pub auth_key: String,
 
     pub tls_cert: Option<PathBuf>,
@@ -37,6 +40,9 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub outbounds: Vec<OutboundConfig>,
+
+    #[serde(default)]
+    pub realm: Option<crate::realm::RealmConfig>,
 }
 
 fn default_server_listen() -> SocketAddr {
@@ -59,6 +65,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: default_server_listen(),
+            realm_listen: None,
             auth_key: String::new(),
             tls_cert: None,
             tls_key: None,
@@ -70,18 +77,54 @@ impl Default for ServerConfig {
             udp_session_timeout_secs: default_udp_session_timeout(),
             acl: None,
             outbounds: Vec::new(),
+            realm: None,
         }
     }
 }
 
 impl ServerConfig {
+    pub fn is_realm(&self) -> bool {
+        self.realm_listen.is_some()
+    }
+
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path.as_ref())
-            .with_context(|| format!("Failed to read server config from {}", path.as_ref().display()))?;
-        let config: ServerConfig = toml::from_str(&content)
-            .with_context(|| "Failed to parse server config TOML")?;
+        let content = fs::read_to_string(path.as_ref()).with_context(|| {
+            format!(
+                "Failed to read server config from {}",
+                path.as_ref().display()
+            )
+        })?;
+
+        let mut table: toml::Table =
+            toml::from_str(&content).with_context(|| "Failed to parse server config TOML")?;
+
+        let mut realm_from_listen = None;
+        if let Some(listen_val) = table.get("listen") {
+            if let Some(s) = listen_val.as_str() {
+                if crate::realm::is_realm_addr(s) {
+                    realm_from_listen = Some(s.to_string());
+                    table.insert(
+                        "listen".to_string(),
+                        toml::Value::String("0.0.0.0:4433".to_string()),
+                    );
+                }
+            }
+        }
+
+        let mut config: ServerConfig = table
+            .try_into()
+            .with_context(|| "Failed to deserialize server config")?;
+
+        if let Some(r) = realm_from_listen {
+            config.realm_listen = Some(r);
+        }
+
         if let Some(ref acl) = config.acl {
             acl.validate()?;
+        }
+        if let Some(ref realm_uri) = config.realm_listen {
+            crate::realm::parse_realm_addr(realm_uri)
+                .with_context(|| "Invalid realm URI in server config")?;
         }
         Ok(config)
     }
@@ -284,7 +327,10 @@ impl std::str::FromStr for TrafficMode {
         match s.to_ascii_lowercase().as_str() {
             "aggregation" => Ok(TrafficMode::Aggregation),
             "resilient" => Ok(TrafficMode::Resilient),
-            other => anyhow::bail!("Unknown traffic mode '{}', expected 'aggregation' or 'resilient'", other),
+            other => anyhow::bail!(
+                "Unknown traffic mode '{}', expected 'aggregation' or 'resilient'",
+                other
+            ),
         }
     }
 }
@@ -313,7 +359,10 @@ impl std::str::FromStr for AggregationStrategy {
         match s.to_ascii_lowercase().as_str() {
             "round_robin" | "roundrobin" => Ok(AggregationStrategy::RoundRobin),
             "random" => Ok(AggregationStrategy::Random),
-            other => anyhow::bail!("Unknown aggregation strategy '{}', expected 'round_robin' or 'random'", other),
+            other => anyhow::bail!(
+                "Unknown aggregation strategy '{}', expected 'round_robin' or 'random'",
+                other
+            ),
         }
     }
 }
@@ -400,6 +449,9 @@ pub struct ServerNodeConfig {
 
     #[serde(default)]
     pub tls_fingerprint: Option<crate::tls_fingerprint::TlsFingerprintConfig>,
+
+    #[serde(default)]
+    pub realm: Option<crate::realm::RealmConfig>,
 }
 
 fn default_weight() -> u32 {
@@ -408,6 +460,12 @@ fn default_weight() -> u32 {
 
 fn default_priority() -> u32 {
     1
+}
+
+impl ServerNodeConfig {
+    pub fn is_realm(&self) -> bool {
+        crate::realm::is_realm_addr(&self.server_addr)
+    }
 }
 
 impl Default for ServerNodeConfig {
@@ -426,6 +484,7 @@ impl Default for ServerNodeConfig {
             priority: default_priority(),
             obfuscation: None,
             tls_fingerprint: None,
+            realm: None,
         }
     }
 }
@@ -502,12 +561,20 @@ impl ClientConfig {
             if server.server_addr.is_empty() {
                 anyhow::bail!("Server node #{} has empty server_addr", idx + 1);
             }
+            if server.is_realm() {
+                crate::realm::parse_realm_addr(&server.server_addr).with_context(|| {
+                    format!("Server node '{}' has invalid realm URI", server.name)
+                })?;
+            }
             if server.auth_key.is_empty() {
                 anyhow::bail!("Server node '{}' must have an auth_key", server.name);
             }
         }
         if let Some(ref relay_target) = self.routing.relay_to_server {
-            let exists = self.servers.iter().any(|s| s.name == *relay_target || s.server_addr == *relay_target);
+            let exists = self
+                .servers
+                .iter()
+                .any(|s| s.name == *relay_target || s.server_addr == *relay_target);
             if !exists {
                 anyhow::bail!(
                     "Configured relay_to_server '{}' was not found among configured servers",
@@ -519,10 +586,14 @@ impl ClientConfig {
     }
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path.as_ref())
-            .with_context(|| format!("Failed to read client config from {}", path.as_ref().display()))?;
-        let mut config: ClientConfig = toml::from_str(&content)
-            .with_context(|| "Failed to parse client config TOML")?;
+        let content = fs::read_to_string(path.as_ref()).with_context(|| {
+            format!(
+                "Failed to read client config from {}",
+                path.as_ref().display()
+            )
+        })?;
+        let mut config: ClientConfig =
+            toml::from_str(&content).with_context(|| "Failed to parse client config TOML")?;
         config.validate_and_normalize()?;
         Ok(config)
     }

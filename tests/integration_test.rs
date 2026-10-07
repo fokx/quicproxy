@@ -122,7 +122,11 @@ async fn test_quicproxy_end_to_end_echo() {
     let mut socks_reply = [0u8; 10];
     socks_conn.read_exact(&mut socks_reply).await.unwrap();
     assert_eq!(socks_reply[0], 0x05);
-    assert_eq!(socks_reply[1], 0x00, "SOCKS5 CONNECT failed with status 0x{:02x}", socks_reply[1]);
+    assert_eq!(
+        socks_reply[1], 0x00,
+        "SOCKS5 CONNECT failed with status 0x{:02x}",
+        socks_reply[1]
+    );
 
     // Send payload through proxy
     let test_msg = b"Hello world over QuicProxy QUIC tunnel!";
@@ -291,5 +295,8 @@ async fn test_quicproxy_auth_failure_rejected() {
 
     let mut socks_reply = [0u8; 10];
     socks_conn.read_exact(&mut socks_reply).await.unwrap();
-    assert_ne!(socks_reply[1], 0x00, "Should have failed CONNECT when unauthenticated");
+    assert_ne!(
+        socks_reply[1], 0x00,
+        "Should have failed CONNECT when unauthenticated"
+    );
 }

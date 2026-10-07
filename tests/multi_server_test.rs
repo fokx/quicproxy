@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -8,8 +8,8 @@ use tokio::time::{sleep, timeout};
 
 use quicproxy::client::run_client;
 use quicproxy::config::{
-    AggregationStrategy, ClientConfig, MultiServerRoutingConfig, ServerConfig,
-    ServerNodeConfig, TrafficMode, TransportMode,
+    AggregationStrategy, ClientConfig, MultiServerRoutingConfig, ServerConfig, ServerNodeConfig,
+    TrafficMode, TransportMode,
 };
 use quicproxy::server::run_server;
 

@@ -4,15 +4,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::acl::ACLEngine;
 use crate::protocol::{
-    read_proxy_request, write_proxy_response, CMD_CONNECT, CMD_UDP_ASSOCIATE, ProxyResponse,
-    STATUS_CONNECT_FAILED, STATUS_SUCCESS, STATUS_UNSUPPORTED, TargetAddr,
+    CMD_CONNECT, CMD_UDP_ASSOCIATE, ProxyResponse, STATUS_CONNECT_FAILED, STATUS_SUCCESS,
+    STATUS_UNSUPPORTED, TargetAddr, read_proxy_request, write_proxy_response,
 };
 
-pub async fn handle_stream<W, R>(
-    mut send: W,
-    mut recv: R,
-    acl_engine: Arc<ACLEngine>,
-) -> Result<()>
+pub async fn handle_stream<W, R>(mut send: W, mut recv: R, acl_engine: Arc<ACLEngine>) -> Result<()>
 where
     W: AsyncWrite + AsyncWriteExt + Unpin + Send + 'static,
     R: AsyncRead + AsyncReadExt + Unpin + Send + 'static,

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rand::RngExt;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -47,7 +47,11 @@ impl fmt::Display for TargetAddr {
 /// Generate random padding bytes between min_len and max_len inclusive.
 pub fn generate_padding(min_len: usize, max_len: usize) -> Vec<u8> {
     let mut rng = rand::rng();
-    let span = if max_len > min_len { max_len - min_len + 1 } else { 1 };
+    let span = if max_len > min_len {
+        max_len - min_len + 1
+    } else {
+        1
+    };
     let len = min_len + (rng.random::<u32>() as usize % span);
     let mut pad = vec![0u8; len];
     rng.fill(&mut pad[..]);
@@ -245,11 +249,18 @@ pub async fn read_auth_request<R: AsyncRead + Unpin>(r: &mut R) -> Result<AuthRe
     }
     let auth_type = r.read_u8().await.context("Failed to read auth type")?;
     let mut token = [0u8; 32];
-    r.read_exact(&mut token).await.context("Failed to read auth token")?;
-    let pad_len = r.read_u8().await.context("Failed to read auth padding len")? as usize;
+    r.read_exact(&mut token)
+        .await
+        .context("Failed to read auth token")?;
+    let pad_len = r
+        .read_u8()
+        .await
+        .context("Failed to read auth padding len")? as usize;
     let mut padding = vec![0u8; pad_len];
     if pad_len > 0 {
-        r.read_exact(&mut padding).await.context("Failed to read auth padding")?;
+        r.read_exact(&mut padding)
+            .await
+            .context("Failed to read auth padding")?;
     }
     Ok(AuthRequest {
         version,
@@ -259,7 +270,10 @@ pub async fn read_auth_request<R: AsyncRead + Unpin>(r: &mut R) -> Result<AuthRe
     })
 }
 
-pub async fn write_auth_response<W: AsyncWrite + Unpin>(w: &mut W, resp: &AuthResponse) -> Result<()> {
+pub async fn write_auth_response<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    resp: &AuthResponse,
+) -> Result<()> {
     w.write_u8(resp.version).await?;
     w.write_u8(resp.status).await?;
     let pad_len = u8::try_from(resp.padding.len().min(255)).unwrap_or(255);
@@ -272,12 +286,20 @@ pub async fn write_auth_response<W: AsyncWrite + Unpin>(w: &mut W, resp: &AuthRe
 }
 
 pub async fn read_auth_response<R: AsyncRead + Unpin>(r: &mut R) -> Result<AuthResponse> {
-    let version = r.read_u8().await.context("Failed to read auth response version")?;
+    let version = r
+        .read_u8()
+        .await
+        .context("Failed to read auth response version")?;
     let status = r.read_u8().await.context("Failed to read auth status")?;
-    let pad_len = r.read_u8().await.context("Failed to read auth response padding len")? as usize;
+    let pad_len = r
+        .read_u8()
+        .await
+        .context("Failed to read auth response padding len")? as usize;
     let mut padding = vec![0u8; pad_len];
     if pad_len > 0 {
-        r.read_exact(&mut padding).await.context("Failed to read auth response padding")?;
+        r.read_exact(&mut padding)
+            .await
+            .context("Failed to read auth response padding")?;
     }
     Ok(AuthResponse {
         version,
@@ -286,7 +308,10 @@ pub async fn read_auth_response<R: AsyncRead + Unpin>(r: &mut R) -> Result<AuthR
     })
 }
 
-pub async fn write_target_addr<W: AsyncWrite + Unpin>(w: &mut W, target: &TargetAddr) -> Result<()> {
+pub async fn write_target_addr<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    target: &TargetAddr,
+) -> Result<()> {
     match target {
         TargetAddr::Ip(SocketAddr::V4(v4)) => {
             w.write_u8(ATYP_IPV4).await?;
@@ -317,20 +342,32 @@ pub async fn read_target_addr<R: AsyncRead + Unpin>(r: &mut R) -> Result<TargetA
     match atyp {
         ATYP_IPV4 => {
             let mut ip_bytes = [0u8; 4];
-            r.read_exact(&mut ip_bytes).await.context("Failed to read IPv4 octets")?;
+            r.read_exact(&mut ip_bytes)
+                .await
+                .context("Failed to read IPv4 octets")?;
             let port = r.read_u16().await.context("Failed to read port")?;
-            Ok(TargetAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip_bytes)), port)))
+            Ok(TargetAddr::Ip(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::from(ip_bytes)),
+                port,
+            )))
         }
         ATYP_IPV6 => {
             let mut ip_bytes = [0u8; 16];
-            r.read_exact(&mut ip_bytes).await.context("Failed to read IPv6 octets")?;
+            r.read_exact(&mut ip_bytes)
+                .await
+                .context("Failed to read IPv6 octets")?;
             let port = r.read_u16().await.context("Failed to read port")?;
-            Ok(TargetAddr::Ip(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip_bytes)), port)))
+            Ok(TargetAddr::Ip(SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::from(ip_bytes)),
+                port,
+            )))
         }
         ATYP_DOMAIN => {
             let len = r.read_u8().await.context("Failed to read domain length")? as usize;
             let mut domain_bytes = vec![0u8; len];
-            r.read_exact(&mut domain_bytes).await.context("Failed to read domain string")?;
+            r.read_exact(&mut domain_bytes)
+                .await
+                .context("Failed to read domain string")?;
             let domain = String::from_utf8(domain_bytes).context("Domain is not valid UTF-8")?;
             let port = r.read_u16().await.context("Failed to read port")?;
             Ok(TargetAddr::Domain(domain, port))
@@ -339,7 +376,10 @@ pub async fn read_target_addr<R: AsyncRead + Unpin>(r: &mut R) -> Result<TargetA
     }
 }
 
-pub async fn write_proxy_request<W: AsyncWrite + Unpin>(w: &mut W, req: &ProxyRequest) -> Result<()> {
+pub async fn write_proxy_request<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    req: &ProxyRequest,
+) -> Result<()> {
     w.write_u8(req.cmd).await?;
     write_target_addr(w, &req.target).await?;
     let pad_len = u8::try_from(req.padding.len().min(255)).unwrap_or(255);
@@ -354,10 +394,15 @@ pub async fn write_proxy_request<W: AsyncWrite + Unpin>(w: &mut W, req: &ProxyRe
 pub async fn read_proxy_request<R: AsyncRead + Unpin>(r: &mut R) -> Result<ProxyRequest> {
     let cmd = r.read_u8().await.context("Failed to read proxy cmd")?;
     let target = read_target_addr(r).await?;
-    let pad_len = r.read_u8().await.context("Failed to read proxy req padding len")? as usize;
+    let pad_len = r
+        .read_u8()
+        .await
+        .context("Failed to read proxy req padding len")? as usize;
     let mut padding = vec![0u8; pad_len];
     if pad_len > 0 {
-        r.read_exact(&mut padding).await.context("Failed to read proxy req padding")?;
+        r.read_exact(&mut padding)
+            .await
+            .context("Failed to read proxy req padding")?;
     }
     Ok(ProxyRequest {
         cmd,
@@ -366,7 +411,10 @@ pub async fn read_proxy_request<R: AsyncRead + Unpin>(r: &mut R) -> Result<Proxy
     })
 }
 
-pub async fn write_proxy_response<W: AsyncWrite + Unpin>(w: &mut W, resp: &ProxyResponse) -> Result<()> {
+pub async fn write_proxy_response<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    resp: &ProxyResponse,
+) -> Result<()> {
     w.write_u8(resp.status).await?;
     let pad_len = u8::try_from(resp.padding.len().min(255)).unwrap_or(255);
     w.write_u8(pad_len).await?;
@@ -379,10 +427,15 @@ pub async fn write_proxy_response<W: AsyncWrite + Unpin>(w: &mut W, resp: &Proxy
 
 pub async fn read_proxy_response<R: AsyncRead + Unpin>(r: &mut R) -> Result<ProxyResponse> {
     let status = r.read_u8().await.context("Failed to read proxy status")?;
-    let pad_len = r.read_u8().await.context("Failed to read proxy resp padding len")? as usize;
+    let pad_len = r
+        .read_u8()
+        .await
+        .context("Failed to read proxy resp padding len")? as usize;
     let mut padding = vec![0u8; pad_len];
     if pad_len > 0 {
-        r.read_exact(&mut padding).await.context("Failed to read proxy resp padding")?;
+        r.read_exact(&mut padding)
+            .await
+            .context("Failed to read proxy resp padding")?;
     }
     Ok(ProxyResponse { status, padding })
 }

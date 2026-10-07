@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-use crate::protocol::{TargetAddr, UdpDatagram, ATYP_DOMAIN, ATYP_IPV4, ATYP_IPV6};
+use crate::protocol::{ATYP_DOMAIN, ATYP_IPV4, ATYP_IPV6, TargetAddr, UdpDatagram};
 use crate::transport::ActiveTransport;
 
 pub fn parse_socks5_udp_header(data: &[u8]) -> Result<(TargetAddr, &[u8])> {
@@ -167,7 +167,10 @@ impl UdpRelay {
                     let (outbound, final_target) =
                         acl_engine.handle(&target, crate::acl::Protocol::Udp).await;
                     if outbound.name() == "reject" {
-                        debug!("Dropped outgoing UDP datagram to {} due to ACL reject rule", target);
+                        debug!(
+                            "Dropped outgoing UDP datagram to {} due to ACL reject rule",
+                            target
+                        );
                         continue;
                     }
                     let dgram = UdpDatagram {

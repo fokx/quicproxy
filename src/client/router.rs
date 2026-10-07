@@ -1,9 +1,9 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use quinn::{Connection, Endpoint};
 use rand::RngExt;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
@@ -11,16 +11,21 @@ use tokio::time::{sleep, timeout};
 
 use crate::auth::generate_auth_token;
 use crate::config::{
-    AggregationStrategy, ClientConfig, MultiServerRoutingConfig, ServerNodeConfig,
-    TrafficMode, TransportMode,
+    AggregationStrategy, ClientConfig, MultiServerRoutingConfig, ServerNodeConfig, TrafficMode,
+    TransportMode,
 };
+use crate::obfs::salamander::ObfuscatedUdpSocket;
 use crate::protocol::{
-    read_auth_response, read_proxy_response, write_auth_request, write_proxy_request,
-    AuthRequest, ProxyRequest, STATUS_SUCCESS, TargetAddr,
+    AuthRequest, ProxyRequest, STATUS_SUCCESS, TargetAddr, read_auth_response, read_proxy_response,
+    write_auth_request, write_proxy_request,
 };
+use crate::realm::{
+    AddrFamily, DEFAULT_REALM_STUN_SERVERS, PlainAsyncUdpSocket, PunchConfig, PunchMetadata,
+    RendezvousClient, parse_realm_addr,
+};
+use crate::transport::ActiveTransport;
 use crate::transport::quic::QuicTransport;
 use crate::transport::tcp::TcpTransport;
-use crate::transport::ActiveTransport;
 
 pub struct ServerNodeHandle {
     pub config: ServerNodeConfig,
@@ -83,13 +88,8 @@ impl MultiServerRouter {
             let anchor_cfg = relay_anchor_node.clone();
 
             tokio::spawn(async move {
-                node_connection_manager_loop(
-                    handle_clone,
-                    routing_cfg,
-                    anchor_cfg,
-                    router_clone,
-                )
-                .await;
+                node_connection_manager_loop(handle_clone, routing_cfg, anchor_cfg, router_clone)
+                    .await;
             });
         }
     }
@@ -129,7 +129,8 @@ impl MultiServerRouter {
 
         match self.routing.strategy {
             AggregationStrategy::RoundRobin => {
-                let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_transports.len();
+                let idx =
+                    self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_transports.len();
                 Some(healthy_transports[idx].clone())
             }
             AggregationStrategy::Random => {
@@ -164,7 +165,8 @@ impl MultiServerRouter {
 
         match self.routing.strategy {
             AggregationStrategy::RoundRobin => {
-                let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_transports.len();
+                let idx =
+                    self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_transports.len();
                 Some(healthy_transports[idx].clone())
             }
             AggregationStrategy::Random => {
@@ -228,7 +230,11 @@ async fn node_connection_manager_loop(
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(10);
 
-    let quic_endpoint = create_node_quic_endpoint(&node.config).await.ok();
+    let quic_endpoint = if node.config.is_realm() {
+        None
+    } else {
+        create_node_quic_endpoint(&node.config).await.ok()
+    };
     let mut current_dgram_task: Option<tokio::task::JoinHandle<()>> = None;
 
     let is_relayed_node = relay_anchor_cfg.is_some() && !node.is_relay_anchor;
@@ -256,7 +262,8 @@ async fn node_connection_manager_loop(
                 node.config.transport
             );
 
-            let direct_connect_res = connect_node_direct(&node.config, quic_endpoint.as_ref()).await;
+            let direct_connect_res =
+                connect_node_direct(&node.config, quic_endpoint.as_ref()).await;
 
             let final_transport_res = match direct_connect_res {
                 Ok(entry_transport) => {
@@ -325,6 +332,7 @@ async fn node_connection_manager_loop(
 
                     // Probing QUIC upgrade if running direct TCP in Auto mode
                     if !is_relayed_node
+                        && !node.config.is_realm()
                         && node.config.transport == TransportMode::Auto
                         && mode_name == "TCP"
                     {
@@ -339,8 +347,16 @@ async fn node_connection_manager_loop(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Node [{}]: Connection attempt failed: {:#}", node.config.name, e);
-                    tracing::info!("Node [{}]: Retrying in {}s...", node.config.name, backoff.as_secs());
+                    tracing::warn!(
+                        "Node [{}]: Connection attempt failed: {:#}",
+                        node.config.name,
+                        e
+                    );
+                    tracing::info!(
+                        "Node [{}]: Retrying in {}s...",
+                        node.config.name,
+                        backoff.as_secs()
+                    );
                     sleep(backoff).await;
                     backoff = (backoff * 2).min(max_backoff);
                 }
@@ -377,14 +393,19 @@ async fn setup_relayed_transport(
         .context("Failed to read proxy response from intermediate node")?;
 
     if resp.status != STATUS_SUCCESS {
-        bail!("Intermediate server rejected connection to anchor server (status: {})", resp.status);
+        bail!(
+            "Intermediate server rejected connection to anchor server (status: {})",
+            resp.status
+        );
     }
 
     // 3. Re-combine stream halves and execute end-to-end TcpTransport handshake directly with anchor server
     let rejoined_stream = tokio::io::join(stream_read, stream_write);
     let tcp_transport = TcpTransport::handshake_on_stream(rejoined_stream, &anchor.auth_key)
         .await
-        .context("Failed to perform end-to-end ChaCha20-Poly1305 handshake with outbound anchor server")?;
+        .context(
+            "Failed to perform end-to-end ChaCha20-Poly1305 handshake with outbound anchor server",
+        )?;
 
     Ok(ActiveTransport::Tcp(tcp_transport))
 }
@@ -393,6 +414,10 @@ async fn connect_node_direct(
     config: &ServerNodeConfig,
     quic_endpoint: Option<&Endpoint>,
 ) -> Result<ActiveTransport> {
+    if config.is_realm() {
+        return connect_realm_node(config).await;
+    }
+
     match config.transport {
         TransportMode::Quic => {
             if let Some(ep) = quic_endpoint {
@@ -403,12 +428,19 @@ async fn connect_node_direct(
             }
         }
         TransportMode::Tcp => {
-            let tcp = TcpTransport::connect(&config.server_addr, config.server_port, &config.auth_key).await?;
+            let tcp =
+                TcpTransport::connect(&config.server_addr, config.server_port, &config.auth_key)
+                    .await?;
             Ok(ActiveTransport::Tcp(tcp))
         }
         TransportMode::Auto => {
             let quic_attempt = if let Some(ep) = quic_endpoint {
-                match timeout(Duration::from_secs(3), connect_and_auth_node_quic(ep, config)).await {
+                match timeout(
+                    Duration::from_secs(3),
+                    connect_and_auth_node_quic(ep, config),
+                )
+                .await
+                {
                     Ok(Ok(conn)) => Some(ActiveTransport::Quic(QuicTransport::new(conn))),
                     Ok(Err(e)) => {
                         tracing::debug!("Node [{}]: QUIC connection failed: {:#}", config.name, e);
@@ -430,11 +462,254 @@ async fn connect_node_direct(
                     "Node [{}]: QUIC unavailable; falling back to TCP ChaCha20-Poly1305 multiplexer...",
                     config.name
                 );
-                let tcp = TcpTransport::connect(&config.server_addr, config.server_port, &config.auth_key).await?;
+                let tcp = TcpTransport::connect(
+                    &config.server_addr,
+                    config.server_port,
+                    &config.auth_key,
+                )
+                .await?;
                 Ok(ActiveTransport::Tcp(tcp))
             }
         }
     }
+}
+
+async fn connect_realm_node(config: &ServerNodeConfig) -> Result<ActiveTransport> {
+    let realm_addr = parse_realm_addr(&config.server_addr)
+        .with_context(|| format!("Failed to parse realm address: {}", config.server_addr))?;
+
+    let family = match config.realm.as_ref().and_then(|r| r.ip_mode.as_deref()) {
+        Some("v4") => AddrFamily::IPv4,
+        Some("v6") => AddrFamily::IPv6,
+        _ => AddrFamily::Any,
+    };
+
+    let local_port = realm_addr.local_port.unwrap_or(0);
+    let bind_addr: SocketAddr = if family == AddrFamily::IPv6 {
+        SocketAddr::new(
+            std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+            local_port,
+        )
+    } else {
+        SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            local_port,
+        )
+    };
+
+    let std_socket = std::net::UdpSocket::bind(bind_addr)
+        .with_context(|| format!("Failed to bind client UDP socket on {}", bind_addr))?;
+
+    let mut mapper = None;
+    if let Some(r_cfg) = &config.realm {
+        if let Some(pm) = r_cfg.port_mapping.as_ref().filter(|p| p.enabled) {
+            let port = std_socket.local_addr()?.port();
+            let to = pm.timeout_duration();
+            let lt = pm.lifetime_duration();
+            match crate::realm::PortMapper::new(port, to, lt).await {
+                Ok(m) => {
+                    tracing::debug!("Realm client UPnP port mapped: {:?}", m.external_addr());
+                    mapper = Some(Arc::new(m));
+                }
+                Err(e) => {
+                    tracing::debug!("Realm client UPnP port mapping skipped: {}", e);
+                }
+            }
+        }
+    }
+
+    std_socket.set_nonblocking(true)?;
+    let tokio_socket = tokio::net::UdpSocket::from_std(std_socket)?;
+
+    let stun_servers: Vec<String> = if !realm_addr.stun_servers.is_empty() {
+        realm_addr.stun_servers.clone()
+    } else if let Some(r_cfg) = &config.realm {
+        if !r_cfg.stun_servers.is_empty() {
+            r_cfg.stun_servers.clone()
+        } else {
+            DEFAULT_REALM_STUN_SERVERS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        }
+    } else {
+        DEFAULT_REALM_STUN_SERVERS
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    };
+
+    let stun_timeout = config
+        .realm
+        .as_ref()
+        .map(|r| r.stun_timeout_duration())
+        .unwrap_or(Duration::from_secs(3));
+
+    let mut local_addrs =
+        crate::realm::discover(&tokio_socket, &stun_servers, stun_timeout, family)
+            .await
+            .context("STUN discovery failed")?;
+
+    if let Some(ref m) = mapper {
+        if let Some(ext) = m.external_addr() {
+            if !local_addrs.contains(&ext) {
+                local_addrs.push(ext);
+            }
+        }
+    }
+
+    if local_addrs.is_empty() {
+        local_addrs.push(tokio_socket.local_addr()?);
+    }
+
+    let meta = PunchMetadata::new_random();
+    let insecure = config.insecure || config.realm.as_ref().is_some_and(|r| r.insecure);
+    let r_client = RendezvousClient::from_addr(&realm_addr, insecure)
+        .context("Failed to create rendezvous client")?;
+
+    tracing::debug!(
+        "Connecting to realm [{}] at {} (attempt: {}) with candidates {:?}",
+        realm_addr.realm_id,
+        realm_addr.host_port,
+        hex::encode(&meta.nonce[..4]),
+        local_addrs
+    );
+
+    let connect_req = crate::realm::client::ConnectRequest {
+        addresses: local_addrs.iter().map(|a| a.to_string()).collect(),
+        nonce: meta.nonce.clone(),
+        obfs: meta.obfs.clone(),
+    };
+
+    let connect_resp = r_client
+        .connect(&realm_addr.realm_id, &connect_req)
+        .await
+        .context("Rendezvous connect request failed")?;
+
+    tracing::debug!(
+        "Received realm connect response with server candidates: {:?}",
+        connect_resp.addresses
+    );
+
+    let peer_addrs: Vec<SocketAddr> = connect_resp
+        .addresses
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let punch_meta = connect_resp.punch_metadata();
+
+    let punch_timeout = config
+        .realm
+        .as_ref()
+        .map(|r| r.punch_timeout_duration())
+        .unwrap_or(Duration::from_secs(5));
+
+    let punch_config = PunchConfig {
+        timeout: punch_timeout,
+        family,
+        ..Default::default()
+    };
+
+    let punch_result = crate::realm::punch(
+        &tokio_socket,
+        &local_addrs,
+        &peer_addrs,
+        &punch_meta,
+        &punch_config,
+    )
+    .await
+    .context("UDP hole punching failed")?;
+
+    tracing::info!(
+        "UDP hole punched successfully to peer {}!",
+        punch_result.peer_addr
+    );
+
+    let std_socket = tokio_socket.into_std()?;
+    std_socket.set_nonblocking(true)?;
+
+    let abstract_socket: Arc<dyn quinn::AsyncUdpSocket> =
+        if let Some(obfs_cfg) = config.obfuscation.as_ref().filter(|o| o.enabled) {
+            let obfs = ObfuscatedUdpSocket::new(std_socket, &obfs_cfg.key)
+                .context("Failed to create ObfuscatedUdpSocket")?;
+            Arc::new(obfs)
+        } else {
+            let plain = PlainAsyncUdpSocket::new(std_socket)
+                .context("Failed to create PlainAsyncUdpSocket")?;
+            Arc::new(plain)
+        };
+
+    let client_crypto = crate::tls::make_client_config_with_fingerprint(
+        config.insecure,
+        config.cert_fingerprint.as_deref(),
+        config.ca_cert.as_deref(),
+        config.tls_fingerprint.as_ref(),
+    )?;
+
+    let runtime = quinn::default_runtime().context("No default Quinn runtime")?;
+    let mut endpoint = Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        None,
+        abstract_socket,
+        runtime,
+    )
+    .context("Failed to create Quinn client endpoint for punched socket")?;
+    endpoint.set_default_client_config(client_crypto);
+
+    let server_name = config
+        .server_name
+        .clone()
+        .unwrap_or_else(|| realm_addr.host.clone());
+
+    let connecting = endpoint
+        .connect(punch_result.peer_addr, &server_name)
+        .context("Failed to initiate QUIC connection to punched peer")?;
+
+    let conn = connecting
+        .await
+        .context("QUIC handshake failed with punched peer")?;
+
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .context("Failed to open QUIC auth stream")?;
+
+    let token = generate_auth_token(&conn, &config.auth_key)
+        .context("Failed to generate session auth token")?;
+
+    let auth_req = AuthRequest::new(token);
+    write_auth_request(&mut send, &auth_req)
+        .await
+        .context("Failed to send QUIC auth request")?;
+
+    let auth_resp = read_auth_response(&mut recv)
+        .await
+        .context("Failed to read QUIC auth response from server")?;
+
+    if auth_resp.status != STATUS_SUCCESS {
+        bail!(
+            "Authentication failed by realm server (status: {})",
+            auth_resp.status
+        );
+    }
+
+    let _ = send.shutdown().await;
+
+    if let Some(m) = mapper {
+        let realm_id = realm_addr.realm_id.clone();
+        tokio::spawn(async move {
+            let interval = m.lifetime() / 2;
+            loop {
+                tokio::time::sleep(interval).await;
+                if let Err(e) = m.renew(Duration::from_secs(3)).await {
+                    tracing::debug!("Realm client [{}] port map renewal failed: {}", realm_id, e);
+                }
+            }
+        });
+    }
+
+    Ok(ActiveTransport::Quic(QuicTransport::new(conn)))
 }
 
 async fn probe_node_quic_upgrade(
@@ -454,10 +729,21 @@ async fn probe_node_quic_upgrade(
             break;
         }
 
-        tracing::debug!("Node [{}]: Probing QUIC connectivity for transport upgrade...", node.config.name);
-        match timeout(Duration::from_secs(3), connect_and_auth_node_quic(&endpoint, &node.config)).await {
+        tracing::debug!(
+            "Node [{}]: Probing QUIC connectivity for transport upgrade...",
+            node.config.name
+        );
+        match timeout(
+            Duration::from_secs(3),
+            connect_and_auth_node_quic(&endpoint, &node.config),
+        )
+        .await
+        {
             Ok(Ok(conn)) => {
-                tracing::info!("Node [{}]: QUIC probed successfully! Upgrading transport to QUIC...", node.config.name);
+                tracing::info!(
+                    "Node [{}]: QUIC probed successfully! Upgrading transport to QUIC...",
+                    node.config.name
+                );
                 let quic_arc = Arc::new(ActiveTransport::Quic(QuicTransport::new(conn)));
                 {
                     let mut guard = node.active_transport.write().await;
@@ -470,7 +756,10 @@ async fn probe_node_quic_upgrade(
                 break;
             }
             _ => {
-                tracing::debug!("Node [{}]: QUIC probe did not succeed yet; continuing on TCP fallback", node.config.name);
+                tracing::debug!(
+                    "Node [{}]: QUIC probe did not succeed yet; continuing on TCP fallback",
+                    node.config.name
+                );
             }
         }
     }
@@ -487,8 +776,9 @@ async fn create_node_quic_endpoint(config: &ServerNodeConfig) -> Result<Endpoint
     let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
 
     let mut endpoint = if let Some(obfs_cfg) = config.obfuscation.as_ref().filter(|o| o.enabled) {
-        let obfs_sock = crate::obfs::salamander::ObfuscatedUdpSocket::bind(bind_addr, &obfs_cfg.key)
-            .context("Failed to bind obfuscated client UDP socket")?;
+        let obfs_sock =
+            crate::obfs::salamander::ObfuscatedUdpSocket::bind(bind_addr, &obfs_cfg.key)
+                .context("Failed to bind obfuscated client UDP socket")?;
         let runtime = quinn::default_runtime().context("No default Quinn runtime")?;
         Endpoint::new_with_abstract_socket(
             quinn::EndpointConfig::default(),
@@ -514,9 +804,7 @@ async fn connect_and_auth_node_quic(
         .await
         .with_context(|| format!("Failed to resolve server address: {}", target_str))?;
 
-    let server_sockaddr = addrs
-        .next()
-        .context("No IP address resolved for server")?;
+    let server_sockaddr = addrs.next().context("No IP address resolved for server")?;
 
     let server_name = config
         .server_name
@@ -527,7 +815,9 @@ async fn connect_and_auth_node_quic(
         .connect(server_sockaddr, &server_name)
         .context("Failed to initiate QUIC connection")?;
 
-    let conn = connecting.await.context("QUIC connection handshake failed")?;
+    let conn = connecting
+        .await
+        .context("QUIC connection handshake failed")?;
 
     // Perform auth handshake on first stream
     let (mut send, mut recv) = conn
@@ -548,7 +838,10 @@ async fn connect_and_auth_node_quic(
         .context("Failed to read QUIC auth response from server")?;
 
     if auth_resp.status != STATUS_SUCCESS {
-        bail!("Authentication failed by server (status: {})", auth_resp.status);
+        bail!(
+            "Authentication failed by server (status: {})",
+            auth_resp.status
+        );
     }
 
     let _ = send.shutdown().await;

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use regex::Regex;
 use std::collections::HashMap;
@@ -18,12 +18,8 @@ impl HostInfo {
         format!(
             "{}|{}|{}",
             self.name,
-            self.ipv4
-                .map(|ip| ip.to_string())
-                .unwrap_or_default(),
-            self.ipv6
-                .map(|ip| ip.to_string())
-                .unwrap_or_default()
+            self.ipv4.map(|ip| ip.to_string()).unwrap_or_default(),
+            self.ipv6.map(|ip| ip.to_string()).unwrap_or_default()
         )
     }
 }

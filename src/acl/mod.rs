@@ -3,17 +3,17 @@ pub mod geo;
 pub mod matcher;
 pub mod rule;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
 pub use cache::{MatchCache, MatchResult, MatchResultCacheKey};
 pub use geo::{DefaultGeoLoader, GeoLoader};
-pub use matcher::{compile_host_matcher, HostInfo, HostMatcher};
-pub use rule::{parse_proto_port, parse_text_rules, Protocol, TextRule};
+pub use matcher::{HostInfo, HostMatcher, compile_host_matcher};
+pub use rule::{Protocol, TextRule, parse_proto_port, parse_text_rules};
 
-use crate::outbound::{build_outbound_map, Outbound};
+use crate::outbound::{Outbound, build_outbound_map};
 use crate::protocol::TargetAddr;
 
 pub const DEFAULT_ACL_CACHE_SIZE: usize = 1024;
@@ -115,14 +115,13 @@ pub async fn compile<O: Clone>(
             .map_err(|e| anyhow::anyhow!("error at line {}: {:#}", rule.line_num, e))?;
 
         let hijack_address = if !rule.hijack_address.is_empty() {
-            let ip = rule
-                .hijack_address
-                .parse::<IpAddr>()
-                .map_err(|_| anyhow::anyhow!(
+            let ip = rule.hijack_address.parse::<IpAddr>().map_err(|_| {
+                anyhow::anyhow!(
                     "error at line {}: invalid hijack address (must be an IP address): {}",
                     rule.line_num,
                     rule.hijack_address
-                ))?;
+                )
+            })?;
             Some(ip)
         } else {
             None
@@ -232,4 +231,3 @@ impl Default for ACLEngine {
         }
     }
 }
-

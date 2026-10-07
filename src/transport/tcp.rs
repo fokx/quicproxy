@@ -1,7 +1,9 @@
-use anyhow::{bail, Context, Result};
-use ring::aead::{self, BoundKey, Nonce, NonceSequence, OpeningKey, SealingKey, UnboundKey, CHACHA20_POLY1305};
+use anyhow::{Context, Result, bail};
+use ring::aead::{
+    self, BoundKey, CHACHA20_POLY1305, Nonce, NonceSequence, OpeningKey, SealingKey, UnboundKey,
+};
 use ring::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519};
-use ring::hmac::{Key, HMAC_SHA256, sign};
+use ring::hmac::{HMAC_SHA256, Key, sign};
 use ring::rand::SystemRandom;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
@@ -11,13 +13,13 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context as TaskContext, Poll, Waker};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 
 use super::ProxyStream;
 use crate::auth::{generate_auth_token_from_secret, verify_auth_token_from_secret};
 use crate::protocol::{
-    read_auth_request, read_auth_response, write_auth_request, write_auth_response, AuthRequest,
-    AuthResponse, STATUS_AUTH_FAILED, STATUS_SUCCESS,
+    AuthRequest, AuthResponse, STATUS_AUTH_FAILED, STATUS_SUCCESS, read_auth_request,
+    read_auth_response, write_auth_request, write_auth_response,
 };
 
 pub const FRAME_TYPE_DATA: u8 = 0x01;
@@ -374,7 +376,13 @@ impl TcpMuxer {
         is_server: bool,
     ) -> Result<(Self, Option<VirtualStream>)> {
         let (reader, writer) = tcp_stream.into_split();
-        Self::new_from_split(reader, writer, sealing_key_bytes, opening_key_bytes, is_server)
+        Self::new_from_split(
+            reader,
+            writer,
+            sealing_key_bytes,
+            opening_key_bytes,
+            is_server,
+        )
     }
 
     pub fn new_from_split<R, W>(
@@ -388,7 +396,6 @@ impl TcpMuxer {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-
         let s_unbound = UnboundKey::new(&CHACHA20_POLY1305, &sealing_key_bytes)
             .map_err(|_| anyhow::anyhow!("Invalid AEAD sealing key"))?;
         let mut sealing_key = SealingKey::new(s_unbound, CounterNonce(0));
@@ -470,8 +477,11 @@ impl TcpMuxer {
                         } else if is_server && frame_type == FRAME_TYPE_DATA {
                             // Incoming new client virtual stream on server
                             let (stream_tx, stream_rx) = mpsc::channel::<StreamEvent>(64);
-                            let vstream =
-                                VirtualStream::new(stream_id, tx_sender_for_accept.clone(), stream_rx);
+                            let vstream = VirtualStream::new(
+                                stream_id,
+                                tx_sender_for_accept.clone(),
+                                stream_rx,
+                            );
                             let _ = stream_tx.send(StreamEvent::Data(data)).await;
                             map.insert(stream_id, stream_tx);
 
@@ -517,7 +527,11 @@ impl TcpMuxer {
             map.insert(stream_id, stream_tx);
         }
 
-        Ok(VirtualStream::new(stream_id, self.tx_sender.clone(), stream_rx))
+        Ok(VirtualStream::new(
+            stream_id,
+            self.tx_sender.clone(),
+            stream_rx,
+        ))
     }
 
     /// Accept an incoming virtual stream (used by server)
@@ -608,12 +622,13 @@ impl TcpTransport {
         stream.read_exact(&mut server_pub_bytes).await?;
 
         let server_peer_pub = UnparsedPublicKey::new(&X25519, &server_pub_bytes);
-        let shared_secret: [u8; 32] = agreement::agree_ephemeral(my_priv, &server_peer_pub, |key| {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(key);
-            arr
-        })
-        .map_err(|_| anyhow::anyhow!("X25519 key agreement failed"))?;
+        let shared_secret: [u8; 32] =
+            agreement::agree_ephemeral(my_priv, &server_peer_pub, |key| {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(key);
+                arr
+            })
+            .map_err(|_| anyhow::anyhow!("X25519 key agreement failed"))?;
 
         // 2. Derive keys
         let (client_write_key, server_write_key, exporter_secret) =
@@ -672,10 +687,7 @@ impl TcpTransport {
 }
 
 /// Server-side TCP connection acceptor and authenticator
-pub async fn accept_server_tcp(
-    mut stream: TcpStream,
-    auth_key: &str,
-) -> Result<TcpMuxer> {
+pub async fn accept_server_tcp(mut stream: TcpStream, auth_key: &str) -> Result<TcpMuxer> {
     let _ = stream.set_nodelay(true);
 
     // 1. Read client public key (32 bytes)
@@ -702,11 +714,9 @@ pub async fn accept_server_tcp(
     .map_err(|_| anyhow::anyhow!("Server X25519 key agreement failed"))?;
 
     // 4. Derive keys (server writes with server_write_key, reads with client_write_key)
-    let (client_write_key, server_write_key, exporter_secret) =
-        hkdf_derive_keys(&shared_secret);
+    let (client_write_key, server_write_key, exporter_secret) = hkdf_derive_keys(&shared_secret);
 
-    let (muxer, stream0_opt) =
-        TcpMuxer::new(stream, server_write_key, client_write_key, true)?;
+    let (muxer, stream0_opt) = TcpMuxer::new(stream, server_write_key, client_write_key, true)?;
     let mut stream0 = stream0_opt.context("Stream 0 must be initialized")?;
 
     // 5. Auth verification on Stream 0

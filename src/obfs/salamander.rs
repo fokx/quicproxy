@@ -1,12 +1,12 @@
 use blake2::{Blake2b512, Digest};
-use quinn::{AsyncUdpSocket, UdpPoller};
 use quinn::udp::{RecvMeta, Transmit, UdpSocketState};
+use quinn::{AsyncUdpSocket, UdpPoller};
 use std::fmt::Debug;
 use std::io::{self, IoSliceMut};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use tokio::io::Interest;
 
 /// Salamander-style symmetric XOR packet scrambler/unscrambler.
@@ -156,7 +156,8 @@ mod tests {
     #[test]
     fn test_salamander_roundtrip() {
         let obfs = SalamanderObfuscator::new("my-secret-key-1234");
-        let original = b"QUIC packet header invariant test: \x80\x00\x00\x01 payload payload payload";
+        let original =
+            b"QUIC packet header invariant test: \x80\x00\x00\x01 payload payload payload";
         let mut buf = original.to_vec();
 
         // After scramble, buffer should not equal original

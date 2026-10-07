@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 
-use super::antiprobe::{apply_auth_jitter, AntiProbeConfig, RateLimiter};
+use super::antiprobe::{AntiProbeConfig, RateLimiter, apply_auth_jitter};
 use super::relay;
 use crate::transport::tcp::accept_server_tcp;
 
@@ -14,8 +14,13 @@ pub async fn handle_tcp_connection(
     udp_session_timeout: u64,
     acl_engine: Arc<crate::acl::ACLEngine>,
 ) -> Result<()> {
-    let peer_addr = stream.peer_addr().context("Failed to get TCP peer address")?;
-    tracing::info!("Accepted incoming TCP fallback connection from {}", peer_addr);
+    let peer_addr = stream
+        .peer_addr()
+        .context("Failed to get TCP peer address")?;
+    tracing::info!(
+        "Accepted incoming TCP fallback connection from {}",
+        peer_addr
+    );
 
     if !rate_limiter.check_allowed(&peer_addr.ip()) {
         tracing::warn!("TCP fallback client IP {} is rate-limited", peer_addr.ip());
@@ -29,21 +34,29 @@ pub async fn handle_tcp_connection(
             muxer
         }
         Err(e) => {
-            tracing::warn!("TCP fallback authentication failed for {}: {:#}", peer_addr, e);
+            tracing::warn!(
+                "TCP fallback authentication failed for {}: {:#}",
+                peer_addr,
+                e
+            );
             rate_limiter.record_failure(peer_addr.ip());
             apply_auth_jitter(anti_probe.auth_jitter_min_ms, anti_probe.auth_jitter_max_ms).await;
             return Err(e);
         }
     };
 
-    tracing::info!("Client {} successfully authenticated over TCP fallback", peer_addr);
+    tracing::info!(
+        "Client {} successfully authenticated over TCP fallback",
+        peer_addr
+    );
 
     let muxer = Arc::new(muxer);
 
     // Set up UDP session table for datagrams encapsulated over TCP fallback
-    let session_table = Arc::new(
-        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout, Arc::clone(&acl_engine)),
-    );
+    let session_table = Arc::new(crate::server::udp_session::UdpSessionTable::new(
+        udp_session_timeout,
+        Arc::clone(&acl_engine),
+    ));
 
     // Spawn datagram receiver loop over TCP muxer
     let muxer_dgram = Arc::clone(&muxer);
@@ -51,27 +64,25 @@ pub async fn handle_tcp_connection(
     tokio::spawn(async move {
         loop {
             match muxer_dgram.recv_datagram().await {
-                Ok(dgram_bytes) => {
-                    match crate::protocol::UdpDatagram::decode(&dgram_bytes) {
-                        Ok(dgram) => {
-                            let muxer_send = Arc::clone(&muxer_dgram);
-                            if let Err(e) = session_table_dgram
-                                .handle_outbound(
-                                    dgram.session_id,
-                                    dgram.target,
-                                    &dgram.payload,
-                                    move |b| muxer_send.send_datagram(&b).map_err(|e| e.to_string()),
-                                )
-                                .await
-                            {
-                                tracing::debug!("TCP UDP session outbound error: {:#}", e);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::debug!("Failed to decode TCP encapsulated UDP datagram: {:#}", e);
+                Ok(dgram_bytes) => match crate::protocol::UdpDatagram::decode(&dgram_bytes) {
+                    Ok(dgram) => {
+                        let muxer_send = Arc::clone(&muxer_dgram);
+                        if let Err(e) = session_table_dgram
+                            .handle_outbound(
+                                dgram.session_id,
+                                dgram.target,
+                                &dgram.payload,
+                                move |b| muxer_send.send_datagram(&b).map_err(|e| e.to_string()),
+                            )
+                            .await
+                        {
+                            tracing::debug!("TCP UDP session outbound error: {:#}", e);
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::debug!("Failed to decode TCP encapsulated UDP datagram: {:#}", e);
+                    }
+                },
                 Err(e) => {
                     tracing::debug!("TCP fallback datagram receiver loop ended: {}", e);
                     break;

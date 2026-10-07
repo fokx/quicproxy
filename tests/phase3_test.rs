@@ -35,7 +35,11 @@ async fn start_echo_server() -> SocketAddr {
     addr
 }
 
-async fn socks5_proxy_echo(socks5_addr: SocketAddr, target_addr: SocketAddr, message: &[u8]) -> Vec<u8> {
+async fn socks5_proxy_echo(
+    socks5_addr: SocketAddr,
+    target_addr: SocketAddr,
+    message: &[u8],
+) -> Vec<u8> {
     let mut stream = TcpStream::connect(socks5_addr).await.unwrap();
 
     // SOCKS5 greeting
@@ -158,10 +162,15 @@ async fn test_masquerade_file_server() {
     };
 
     // Create a temporary static site directory
-    let temp_dir = std::env::temp_dir().join(format!("quicproxy_masq_site_{}", rand::random::<u32>()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("quicproxy_masq_site_{}", rand::random::<u32>()));
     std::fs::create_dir_all(&temp_dir).unwrap();
     let index_file = temp_dir.join("index.html");
-    std::fs::write(&index_file, "<html><body><h1>Legitimate Static Website</h1></body></html>").unwrap();
+    std::fs::write(
+        &index_file,
+        "<html><body><h1>Legitimate Static Website</h1></body></html>",
+    )
+    .unwrap();
 
     let server_cfg = ServerConfig {
         listen: server_udp_addr,
@@ -185,7 +194,11 @@ async fn test_masquerade_file_server() {
     let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
     endpoint.set_default_client_config(client_crypto);
 
-    let conn = endpoint.connect(server_udp_addr, "localhost").unwrap().await.unwrap();
+    let conn = endpoint
+        .connect(server_udp_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
 
     let h3_conn = h3_quinn::Connection::new(conn);
     let (mut driver, mut send_request) = h3::client::builder()
@@ -312,14 +325,22 @@ async fn test_antiprobe_rate_limiting() {
     endpoint.set_default_client_config(client_crypto);
 
     // Attempt 1: Connect and send invalid auth token
-    let conn1 = endpoint.connect(server_udp_addr, "localhost").unwrap().await.unwrap();
+    let conn1 = endpoint
+        .connect(server_udp_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
     let (mut send1, mut recv1) = conn1.open_bi().await.unwrap();
     let invalid_req = quicproxy::protocol::AuthRequest::new([0xee; 32]);
     let _ = quicproxy::protocol::write_auth_request(&mut send1, &invalid_req).await;
     let _ = quicproxy::protocol::read_auth_response(&mut recv1).await;
 
     // Attempt 2: Connect and send invalid auth token (reaches threshold = 2)
-    let conn2 = endpoint.connect(server_udp_addr, "localhost").unwrap().await.unwrap();
+    let conn2 = endpoint
+        .connect(server_udp_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
     let (mut send2, mut recv2) = conn2.open_bi().await.unwrap();
     let _ = quicproxy::protocol::write_auth_request(&mut send2, &invalid_req).await;
     let _ = quicproxy::protocol::read_auth_response(&mut recv2).await;
@@ -327,7 +348,11 @@ async fn test_antiprobe_rate_limiting() {
     sleep(Duration::from_millis(50)).await;
 
     // Attempt 3: Now rate limited! The server closes connection immediately with code 1
-    let conn3 = endpoint.connect(server_udp_addr, "localhost").unwrap().await.unwrap();
+    let conn3 = endpoint
+        .connect(server_udp_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
     let bi_res = conn3.open_bi().await;
     // Should be closed by server due to rate limit
     match bi_res {

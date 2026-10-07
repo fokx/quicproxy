@@ -109,7 +109,8 @@ impl RateLimiter {
 
     /// Prune expired entries from memory.
     pub fn cleanup(&self) {
-        self.failures.retain(|_, (_, start_time)| start_time.elapsed() < self.window);
+        self.failures
+            .retain(|_, (_, start_time)| start_time.elapsed() < self.window);
     }
 }
 

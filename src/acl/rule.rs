@@ -1,11 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use regex::Regex;
 use std::fmt;
 use std::sync::LazyLock;
 
-static LINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^([\w\-]+)\s*\(([^,]+)(?:,([^,]+))?(?:,([^,]+))?\)$"#).unwrap()
-});
+static LINE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^([\w\-]+)\s*\(([^,]+)(?:,([^,]+))?(?:,([^,]+))?\)$"#).unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Protocol {

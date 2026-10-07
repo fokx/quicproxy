@@ -1,14 +1,14 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use quinn::Connection;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::antiprobe::{apply_auth_jitter, AntiProbeConfig, RateLimiter};
+use super::antiprobe::{AntiProbeConfig, RateLimiter, apply_auth_jitter};
 use super::masquerade::MasqueradeHandler;
 use super::relay;
 use crate::auth::verify_auth_token;
 use crate::protocol::{
-    read_auth_request, write_auth_response, AuthResponse, STATUS_AUTH_FAILED, STATUS_SUCCESS,
+    AuthResponse, STATUS_AUTH_FAILED, STATUS_SUCCESS, read_auth_request, write_auth_response,
 };
 
 pub async fn handle_connection(
@@ -25,7 +25,10 @@ pub async fn handle_connection(
 
     // 1. IP Rate Limiting Check
     if !rate_limiter.check_allowed(&remote_addr.ip()) {
-        tracing::warn!("Remote IP {} is rate-limited; diverting/rejecting", remote_addr.ip());
+        tracing::warn!(
+            "Remote IP {} is rate-limited; diverting/rejecting",
+            remote_addr.ip()
+        );
         if masquerade.is_enabled() {
             return masquerade.handle_quic_connection(conn).await;
         } else {
@@ -39,14 +42,21 @@ pub async fn handle_connection(
     let (mut auth_send, mut auth_recv) = match accept_bi_result {
         Ok(Ok(streams)) => streams,
         Ok(Err(e)) => {
-            tracing::warn!("Connection from {} closed before opening stream: {}", remote_addr, e);
+            tracing::warn!(
+                "Connection from {} closed before opening stream: {}",
+                remote_addr,
+                e
+            );
             if masquerade.is_enabled() {
                 return masquerade.handle_quic_connection(conn).await;
             }
             return Ok(());
         }
         Err(_) => {
-            tracing::debug!("Connection from {} timed out waiting for bidi stream", remote_addr);
+            tracing::debug!(
+                "Connection from {} timed out waiting for bidi stream",
+                remote_addr
+            );
             if masquerade.is_enabled() {
                 return masquerade.handle_quic_connection(conn).await;
             }
@@ -55,7 +65,8 @@ pub async fn handle_connection(
     };
 
     // 3. Attempt to read AuthRequest
-    let auth_req_result = tokio::time::timeout(Duration::from_secs(3), read_auth_request(&mut auth_recv)).await;
+    let auth_req_result =
+        tokio::time::timeout(Duration::from_secs(3), read_auth_request(&mut auth_recv)).await;
     let auth_req = match auth_req_result {
         Ok(Ok(req)) => req,
         _ => {
@@ -65,7 +76,8 @@ pub async fn handle_connection(
             if masquerade.is_enabled() {
                 return masquerade.handle_quic_stream(&conn, auth_send).await;
             } else {
-                apply_auth_jitter(anti_probe.auth_jitter_min_ms, anti_probe.auth_jitter_max_ms).await;
+                apply_auth_jitter(anti_probe.auth_jitter_min_ms, anti_probe.auth_jitter_max_ms)
+                    .await;
                 let resp = AuthResponse::new(STATUS_AUTH_FAILED);
                 let _ = write_auth_response(&mut auth_send, &resp).await;
                 let _ = auth_send.finish();
@@ -108,9 +120,10 @@ pub async fn handle_connection(
     tracing::info!("Client {} successfully authenticated", remote_addr);
 
     // Set up UDP session table and datagram receiver loop for this connection
-    let session_table = std::sync::Arc::new(
-        crate::server::udp_session::UdpSessionTable::new(udp_session_timeout, Arc::clone(&acl_engine)),
-    );
+    let session_table = std::sync::Arc::new(crate::server::udp_session::UdpSessionTable::new(
+        udp_session_timeout,
+        Arc::clone(&acl_engine),
+    ));
 
     // Spawn datagram receiver loop
     let conn_dgram = conn.clone();
@@ -118,27 +131,25 @@ pub async fn handle_connection(
     tokio::spawn(async move {
         loop {
             match conn_dgram.read_datagram().await {
-                Ok(dgram_bytes) => {
-                    match crate::protocol::UdpDatagram::decode(&dgram_bytes) {
-                        Ok(dgram) => {
-                            let conn_for_send = conn_dgram.clone();
-                            if let Err(e) = session_table_dgram
-                                .handle_outbound(
-                                    dgram.session_id,
-                                    dgram.target,
-                                    &dgram.payload,
-                                    move |b| conn_for_send.send_datagram(b).map_err(|e| e.to_string()),
-                                )
-                                .await
-                            {
-                                tracing::debug!("UDP session outbound error: {:#}", e);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::debug!("Failed to decode UDP datagram: {:#}", e);
+                Ok(dgram_bytes) => match crate::protocol::UdpDatagram::decode(&dgram_bytes) {
+                    Ok(dgram) => {
+                        let conn_for_send = conn_dgram.clone();
+                        if let Err(e) = session_table_dgram
+                            .handle_outbound(
+                                dgram.session_id,
+                                dgram.target,
+                                &dgram.payload,
+                                move |b| conn_for_send.send_datagram(b).map_err(|e| e.to_string()),
+                            )
+                            .await
+                        {
+                            tracing::debug!("UDP session outbound error: {:#}", e);
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::debug!("Failed to decode UDP datagram: {:#}", e);
+                    }
+                },
                 Err(e) => {
                     tracing::debug!("Datagram receiver loop ended: {}", e);
                     break;

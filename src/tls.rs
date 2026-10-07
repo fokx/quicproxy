@@ -1,8 +1,8 @@
-use anyhow::{bail, Context, Result};
-use ring::digest::{digest, SHA256};
+use anyhow::{Context, Result, bail};
+use ring::digest::{SHA256, digest};
+use rustls::DigitallySignedStruct;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
-use rustls::DigitallySignedStruct;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,10 +12,14 @@ pub const ALPN_QUIC: &[u8] = b"h3";
 /// Generate a self-signed certificate and private key in PEM format.
 /// Returns (cert_pem, key_pem, sha256_fingerprint).
 pub fn generate_self_signed(domain: &str) -> Result<(String, String, String)> {
-    let subject_alt_names = vec![domain.to_string(), "localhost".to_string(), "127.0.0.1".to_string()];
+    let subject_alt_names = vec![
+        domain.to_string(),
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+    ];
     let certified_key = rcgen::generate_simple_self_signed(subject_alt_names)
         .context("Failed to generate self-signed certificate")?;
-    
+
     let cert_pem = certified_key.cert.pem();
     let key_pem = certified_key.signing_key.serialize_pem();
     let cert_der = certified_key.cert.der();
@@ -32,7 +36,10 @@ pub fn format_sha256_fingerprint(der_bytes: &[u8]) -> String {
 
 /// Normalize fingerprint string (strip colons, whitespace, lowercase)
 pub fn normalize_fingerprint(fp: &str) -> String {
-    fp.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>().to_ascii_lowercase()
+    fp.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// Parse certificates from PEM string
@@ -89,7 +96,7 @@ pub fn make_server_config(
 
     let quinn_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
         .context("Failed to create QUIC server config")?;
-    
+
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quinn_crypto));
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?));
@@ -263,7 +270,7 @@ pub fn make_client_config_with_fingerprint(
 
     let quinn_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
         .context("Failed to create QUIC client config")?;
-    
+
     let mut client_config = quinn::ClientConfig::new(Arc::new(quinn_crypto));
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?));

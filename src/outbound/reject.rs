@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
-use crate::protocol::TargetAddr;
 use super::{AsyncReadWrite, Outbound};
+use crate::protocol::TargetAddr;
 
 pub struct RejectOutbound {
     name: String,
@@ -22,10 +22,11 @@ impl Outbound for RejectOutbound {
         true
     }
 
-    fn tcp_connect<'a>(&'a self, target: &'a TargetAddr) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
+    fn tcp_connect<'a>(
+        &'a self,
+        target: &'a TargetAddr,
+    ) -> super::BoxFuture<'a, Result<Box<dyn AsyncReadWrite>>> {
         let target_str = target.to_string();
-        Box::pin(async move {
-            bail!("Connection to {} rejected by ACL", target_str)
-        })
+        Box::pin(async move { bail!("Connection to {} rejected by ACL", target_str) })
     }
 }
