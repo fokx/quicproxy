@@ -59,7 +59,7 @@ pub async fn run_client(mut config: ClientConfig) -> Result<()> {
     let acl_engine = if let Some(ref acl_cfg) = config.acl {
         let rules_str = acl_cfg.load_rules_string()?;
         if rules_str.trim().is_empty() {
-            Arc::new(crate::acl::ACLEngine::default())
+            Arc::new(crate::acl::ACLEngine::new_client_default())
         } else {
             let geo_loader = crate::acl::geo::DefaultGeoLoader::new(
                 acl_cfg.geoip.clone(),
@@ -67,12 +67,16 @@ pub async fn run_client(mut config: ClientConfig) -> Result<()> {
                 acl_cfg.parse_geo_update_interval(),
             );
             Arc::new(
-                crate::acl::ACLEngine::new_from_string(&rules_str, &config.outbounds, &geo_loader)
-                    .await?,
+                crate::acl::ACLEngine::new_client_from_string(
+                    &rules_str,
+                    &config.outbounds,
+                    &geo_loader,
+                )
+                .await?,
             )
         }
     } else {
-        Arc::new(crate::acl::ACLEngine::default())
+        Arc::new(crate::acl::ACLEngine::new_client_default())
     };
 
     let config_arc = Arc::new(config);

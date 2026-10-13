@@ -443,15 +443,30 @@ async fn connect_node_direct(
                 {
                     Ok(Ok(conn)) => Some(ActiveTransport::Quic(QuicTransport::new(conn))),
                     Ok(Err(e)) => {
+                        if config.cert_fingerprint.is_some() || is_tls_or_auth_error(&e) {
+                            return Err(e);
+                        }
                         tracing::debug!("Node [{}]: QUIC connection failed: {:#}", config.name, e);
                         None
                     }
                     Err(_) => {
+                        if config.cert_fingerprint.is_some() {
+                            bail!(
+                                "Node [{}]: QUIC connection timed out; cannot fallback to TCP because cert_fingerprint pinning requires QUIC TLS",
+                                config.name
+                            );
+                        }
                         tracing::debug!("Node [{}]: QUIC connection timed out (3s)", config.name);
                         None
                     }
                 }
             } else {
+                if config.cert_fingerprint.is_some() {
+                    bail!(
+                        "Node [{}]: QUIC endpoint unavailable; cannot fallback to TCP because cert_fingerprint pinning requires QUIC TLS",
+                        config.name
+                    );
+                }
                 None
             };
 
@@ -846,4 +861,15 @@ async fn connect_and_auth_node_quic(
 
     let _ = send.shutdown().await;
     Ok(conn)
+}
+
+fn is_tls_or_auth_error(e: &anyhow::Error) -> bool {
+    let err_str = format!("{:#}", e).to_ascii_lowercase();
+    err_str.contains("fingerprint")
+        || err_str.contains("certificate")
+        || err_str.contains("crypto error")
+        || err_str.contains("authentication failed")
+        || err_str.contains("auth failed")
+        || err_str.contains("alert")
+        || err_str.contains("tls")
 }

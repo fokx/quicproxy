@@ -300,3 +300,104 @@ async fn test_quicproxy_auth_failure_rejected() {
         "Should have failed CONNECT when unauthenticated"
     );
 }
+
+#[tokio::test]
+async fn test_wrong_cert_fingerprint_rejected() {
+    let server_udp_addr: SocketAddr = {
+        let u = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        u.local_addr().unwrap()
+    };
+    let socks5_addr: SocketAddr = {
+        let t = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        t.local_addr().unwrap()
+    };
+
+    let auth_key = "correct-secret-password".to_string();
+
+    let server_cfg = ServerConfig {
+        listen: server_udp_addr,
+        auth_key: auth_key.clone(),
+        auto_cert: true,
+        auto_cert_domain: "localhost".to_string(),
+        ..Default::default()
+    };
+
+    tokio::spawn(async move {
+        let _ = run_server(server_cfg).await;
+    });
+
+    sleep(Duration::from_millis(200)).await;
+
+    // Client uses the correct auth key but a WRONG cert fingerprint
+    let client_cfg = ClientConfig::new_single_server(
+        socks5_addr,
+        ServerNodeConfig {
+            server_addr: "127.0.0.1".to_string(),
+            server_port: server_udp_addr.port(),
+            auth_key: auth_key.clone(),
+            server_name: Some("localhost".to_string()),
+            cert_fingerprint: Some(
+                "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+                    .to_string(),
+            ),
+            ..Default::default()
+        },
+    );
+
+    tokio::spawn(async move {
+        let _ = run_client(client_cfg).await;
+    });
+
+    sleep(Duration::from_millis(800)).await;
+
+    let mut socks_conn = TcpStream::connect(socks5_addr).await.unwrap();
+
+    // SOCKS5 Handshake
+    socks_conn.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    socks_conn.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+
+    // When attempting CONNECT, it must NOT connect because of wrong cert fingerprint!
+    let req = [0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 80];
+    socks_conn.write_all(&req).await.unwrap();
+
+    let mut socks_reply = [0u8; 10];
+    socks_conn.read_exact(&mut socks_reply).await.unwrap();
+    assert_ne!(
+        socks_reply[1], 0x00,
+        "Connection MUST be rejected when wrong cert-fingerprint is used!"
+    );
+}
+
+#[tokio::test]
+async fn test_server_cert_persistence_across_restarts() {
+    let temp_dir = std::env::temp_dir().join(format!("quicproxy_test_cert_persist_{}", rand::random::<u64>()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    // First start: generates and writes to temp_dir
+    let (_certs1, _key1, fp1, path1) = quicproxy::tls::load_or_generate_server_certs(
+        None,
+        None,
+        Some(&temp_dir),
+        "localhost",
+    ).unwrap();
+
+    assert!(!fp1.is_empty());
+    assert_ne!(fp1, "unknown");
+    assert!(!path1.is_empty());
+
+    // Second start: loads existing from temp_dir
+    let (_certs2, _key2, fp2, path2) = quicproxy::tls::load_or_generate_server_certs(
+        None,
+        None,
+        Some(&temp_dir),
+        "localhost",
+    ).unwrap();
+
+    assert_eq!(fp1, fp2, "Certificate fingerprint MUST remain stable across restarts!");
+    assert_eq!(path1, path2, "Certificate path MUST remain consistent across restarts!");
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

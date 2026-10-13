@@ -163,6 +163,31 @@ impl ACLEngine {
         })
     }
 
+    pub fn new_client_default() -> Self {
+        let default_ob = Arc::new(crate::outbound::DefaultOutbound);
+        Self {
+            rule_set: CompiledRuleSet {
+                rules: Vec::new(),
+                cache: MatchCache::new(DEFAULT_ACL_CACHE_SIZE),
+            },
+            default_outbound: default_ob,
+        }
+    }
+
+    pub async fn new_client_from_string(
+        rules_str: &str,
+        outbounds_cfg: &[crate::config::OutboundConfig],
+        geo_loader: &dyn GeoLoader,
+    ) -> Result<Self> {
+        let text_rules = parse_text_rules(rules_str)?;
+        let (ob_map, default_ob) = crate::outbound::build_client_outbound_map(outbounds_cfg)?;
+        let rule_set = compile(&text_rules, &ob_map, DEFAULT_ACL_CACHE_SIZE, geo_loader).await?;
+        Ok(Self {
+            rule_set,
+            default_outbound: default_ob,
+        })
+    }
+
     pub async fn resolve_host_info(target: &TargetAddr) -> HostInfo {
         match target {
             TargetAddr::Ip(addr) => match addr.ip() {

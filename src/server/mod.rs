@@ -12,10 +12,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::config::ServerConfig;
-use crate::tls::{
-    format_sha256_fingerprint, generate_self_signed, load_certs_from_file, load_key_from_file,
-    make_server_config, parse_certs_pem, parse_key_pem,
-};
+use crate::tls::{load_or_generate_server_certs, make_server_config};
 
 pub async fn run_server(config: ServerConfig) -> Result<()> {
     if config.is_realm() {
@@ -40,32 +37,13 @@ async fn run_realm_server(config: ServerConfig) -> Result<()> {
         );
     }
 
-    let (certs, key, fingerprint_info) =
-        if let (Some(cert_path), Some(key_path)) = (&config.tls_cert, &config.tls_key) {
-            tracing::info!(
-                "Loading TLS certificates from {} and key from {}",
-                cert_path.display(),
-                key_path.display()
-            );
-            let certs = load_certs_from_file(cert_path)?;
-            let key = load_key_from_file(key_path)?;
-            let fp = if let Some(first_cert) = certs.first() {
-                format_sha256_fingerprint(first_cert.as_ref())
-            } else {
-                "unknown".to_string()
-            };
-            (certs, key, fp)
-        } else {
-            tracing::info!(
-                "Auto-generating self-signed TLS certificate for domain '{}'",
-                config.auto_cert_domain
-            );
-            let (cert_pem, key_pem, fp) = generate_self_signed(&config.auto_cert_domain)
-                .context("Failed to generate auto self-signed certificate")?;
-            let certs = parse_certs_pem(&cert_pem)?;
-            let key = parse_key_pem(&key_pem)?;
-            (certs, key, fp)
-        };
+    let (certs, key, fingerprint_info, cert_source) =
+        load_or_generate_server_certs(
+            config.tls_cert.as_deref(),
+            config.tls_key.as_deref(),
+            config.auto_cert_dir.as_deref(),
+            &config.auto_cert_domain,
+        )?;
 
     let server_crypto =
         make_server_config(certs, key).context("Failed to configure QUIC server TLS")?;
@@ -151,6 +129,7 @@ async fn run_realm_server(config: ServerConfig) -> Result<()> {
     println!("    - Realm ID:         {}", realm_addr.realm_id);
     println!("    - Rendezvous Host:  {}", realm_addr.host_port);
     println!("    - Local UDP Port:   {}", local_udp_port);
+    println!("  Certificate:        {}", cert_source);
     println!("  Certificate SHA-256 Fingerprint: {}", fingerprint_info);
     if masq_enabled {
         println!("  HTTP/3 Camouflage Masquerade Mode: {}", masq_config.mode);
@@ -246,32 +225,13 @@ async fn run_standard_server(config: ServerConfig) -> Result<()> {
         );
     }
 
-    let (certs, key, fingerprint_info) =
-        if let (Some(cert_path), Some(key_path)) = (&config.tls_cert, &config.tls_key) {
-            tracing::info!(
-                "Loading TLS certificates from {} and key from {}",
-                cert_path.display(),
-                key_path.display()
-            );
-            let certs = load_certs_from_file(cert_path)?;
-            let key = load_key_from_file(key_path)?;
-            let fp = if let Some(first_cert) = certs.first() {
-                format_sha256_fingerprint(first_cert.as_ref())
-            } else {
-                "unknown".to_string()
-            };
-            (certs, key, fp)
-        } else {
-            tracing::info!(
-                "Auto-generating self-signed TLS certificate for domain '{}'",
-                config.auto_cert_domain
-            );
-            let (cert_pem, key_pem, fp) = generate_self_signed(&config.auto_cert_domain)
-                .context("Failed to generate auto self-signed certificate")?;
-            let certs = parse_certs_pem(&cert_pem)?;
-            let key = parse_key_pem(&key_pem)?;
-            (certs, key, fp)
-        };
+    let (certs, key, fingerprint_info, cert_source) =
+        load_or_generate_server_certs(
+            config.tls_cert.as_deref(),
+            config.tls_key.as_deref(),
+            config.auto_cert_dir.as_deref(),
+            &config.auto_cert_domain,
+        )?;
 
     let server_crypto =
         make_server_config(certs, key).context("Failed to configure QUIC server TLS")?;
@@ -319,6 +279,7 @@ async fn run_standard_server(config: ServerConfig) -> Result<()> {
     println!("  QuicProxy Server is listening:");
     println!("    - Primary QUIC: UDP {}", local_addr);
     println!("    - Fallback TCP: TCP {}", tcp_local_addr);
+    println!("  Certificate: {}", cert_source);
     println!("  Certificate SHA-256 Fingerprint: {}", fingerprint_info);
     if masq_enabled {
         println!("  HTTP/3 Camouflage Masquerade Mode: {}", masq_config.mode);

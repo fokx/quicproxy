@@ -15,9 +15,13 @@ auth_key = "change-this-to-a-strong-secret-key"
 # tls_cert = "/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
 # tls_key = "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
 
-# Self-signed certificate options
+# Self-signed certificate options:
+# QuicProxy automatically generates and persists self-signed certificates so the
+# SHA-256 certificate fingerprint remains stable across server restarts.
 auto_cert = true
 auto_cert_domain = "localhost"
+# Optional directory to persist auto-generated certificates (defaults to ~/.quicproxy/certs/):
+# auto_cert_dir = "/var/lib/quicproxy/certs"
 
 # ==============================================================================
 # Access Control List (ACL) Configuration

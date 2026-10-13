@@ -581,5 +581,25 @@ async fn test_client_socks5_with_acl_rules() -> Result<()> {
         assert_eq!(&echo_buf, b"hello hijack acl");
     }
 
+    // 6. Test 4: SOCKS5 CONNECT to 127.0.0.2:80 -> does not match direct or reject -> falls back to default (upstream tunnel)
+    // Since upstream proxy server (14433) is not running, it must route to default tunnel and fail, NOT connect direct!
+    {
+        let mut client = tokio::net::TcpStream::connect(socks5_addr).await?;
+        client.write_all(&[0x05, 0x01, 0x00]).await?;
+        let mut resp = [0u8; 2];
+        client.read_exact(&mut resp).await?;
+        assert_eq!(resp, [0x05, 0x00]);
+
+        let req = [0x05, 0x01, 0x00, 0x01, 127, 0, 0, 2, 0, 80];
+        client.write_all(&req).await?;
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).await?;
+        assert_eq!(reply[0], 0x05);
+        assert_ne!(
+            reply[1], 0x00,
+            "Unmatched target must route to default upstream tunnel, not connect directly"
+        );
+    }
+
     Ok(())
 }

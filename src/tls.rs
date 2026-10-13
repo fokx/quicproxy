@@ -82,6 +82,129 @@ pub fn load_key_from_file(path: &Path) -> Result<PrivateKeyDer<'static>> {
     parse_key_pem(&content)
 }
 
+static CERT_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn atomic_write_file(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let rand_id = rand::random::<u64>();
+    let tmp_path = path.with_extension(format!("tmp.{}", rand_id));
+    fs::write(&tmp_path, content)?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Load existing TLS certificate & key or generate self-signed and persist to disk.
+/// Returns (certs, key, fingerprint, cert_path_str).
+pub fn load_or_generate_server_certs(
+    tls_cert: Option<&Path>,
+    tls_key: Option<&Path>,
+    auto_cert_dir: Option<&Path>,
+    domain: &str,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>, String, String)> {
+    let _guard = CERT_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
+        if cert_path.exists() && key_path.exists() {
+            if let (Ok(certs), Ok(key)) = (load_certs_from_file(cert_path), load_key_from_file(key_path)) {
+                let is_valid = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(certs.clone(), key.clone_key())
+                    .is_ok();
+                if is_valid {
+                    let fp = if let Some(first_cert) = certs.first() {
+                        format_sha256_fingerprint(first_cert.as_ref())
+                    } else {
+                        "unknown".to_string()
+                    };
+                    tracing::info!(
+                        "Loaded TLS certificate from {}",
+                        cert_path.display()
+                    );
+                    return Ok((certs, key, fp, cert_path.display().to_string()));
+                }
+            }
+        }
+
+        tracing::info!(
+            "Cert/key files not found or invalid at {} and {}; generating self-signed certificate and persisting to disk...",
+            cert_path.display(),
+            key_path.display()
+        );
+        let (cert_pem, key_pem, fp) = generate_self_signed(domain)?;
+        atomic_write_file(cert_path, &cert_pem)
+            .with_context(|| format!("Failed to write certificate to {}", cert_path.display()))?;
+        atomic_write_file(key_path, &key_pem)
+            .with_context(|| format!("Failed to write private key to {}", key_path.display()))?;
+        let certs = parse_certs_pem(&cert_pem)?;
+        let key = parse_key_pem(&key_pem)?;
+        return Ok((certs, key, fp, cert_path.display().to_string()));
+    }
+
+    // Auto-cert mode: persist in auto_cert_dir or ~/.quicproxy/certs/
+    let dir = if let Some(d) = auto_cert_dir {
+        d.to_path_buf()
+    } else if let Some(home) = std::env::var_os("HOME") {
+        std::path::PathBuf::from(home).join(".quicproxy").join("certs")
+    } else {
+        std::path::PathBuf::from(".quicproxy").join("certs")
+    };
+
+    let safe_domain: String = domain
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cert_path = dir.join(format!("cert_{}.pem", safe_domain));
+    let key_path = dir.join(format!("key_{}.pem", safe_domain));
+
+    if cert_path.exists() && key_path.exists() {
+        if let (Ok(certs), Ok(key)) = (load_certs_from_file(&cert_path), load_key_from_file(&key_path)) {
+            let is_valid = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs.clone(), key.clone_key())
+                .is_ok();
+            if is_valid {
+                let fp = if let Some(first_cert) = certs.first() {
+                    format_sha256_fingerprint(first_cert.as_ref())
+                } else {
+                    "unknown".to_string()
+                };
+                tracing::info!(
+                    "Loaded persistent self-signed TLS certificate from {}",
+                    cert_path.display()
+                );
+                return Ok((certs, key, fp, cert_path.display().to_string()));
+            }
+        }
+    }
+
+    tracing::info!(
+        "Generating self-signed TLS certificate for domain '{}' and persisting to {}",
+        domain,
+        cert_path.display()
+    );
+    let (cert_pem, key_pem, fp) = generate_self_signed(domain)?;
+    let _ = fs::create_dir_all(&dir);
+    if let Err(e) = atomic_write_file(&cert_path, &cert_pem) {
+        tracing::warn!("Failed to persist auto-cert to {}: {}", cert_path.display(), e);
+    }
+    if let Err(e) = atomic_write_file(&key_path, &key_pem) {
+        tracing::warn!("Failed to persist auto-key to {}: {}", key_path.display(), e);
+    }
+
+    let certs = parse_certs_pem(&cert_pem)?;
+    let key = parse_key_pem(&key_pem)?;
+    Ok((certs, key, fp, cert_path.display().to_string()))
+}
+
 /// Create Quinn ServerConfig with ALPN h3
 pub fn make_server_config(
     certs: Vec<CertificateDer<'static>>,
@@ -230,15 +353,15 @@ pub fn make_client_config_with_fingerprint(
 ) -> Result<quinn::ClientConfig> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let client_crypto = if insecure {
-        rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
-            .with_no_client_auth()
-    } else if let Some(fp) = cert_fingerprint {
+    let client_crypto = if let Some(fp) = cert_fingerprint {
         rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(FingerprintVerifier::new(fp)))
+            .with_no_client_auth()
+    } else if insecure {
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
             .with_no_client_auth()
     } else if let Some(ca_path) = ca_cert_path {
         let certs = load_certs_from_file(ca_path)?;

@@ -61,6 +61,10 @@ struct ServerArgs {
     #[arg(long, default_value = "localhost")]
     domain: String,
 
+    /// Directory to persist auto-generated self-signed certificates
+    #[arg(long)]
+    auto_cert_dir: Option<PathBuf>,
+
     /// HTTP/3 masquerade mode: off, file_server, or reverse_proxy
     #[arg(long)]
     masquerade_mode: Option<quicproxy::server::masquerade::MasqueradeMode>,
@@ -238,9 +242,14 @@ async fn main() -> Result<()> {
                     tls_key: args.key.clone(),
                     auto_cert: true,
                     auto_cert_domain: args.domain,
+                    auto_cert_dir: args.auto_cert_dir.clone(),
                     ..Default::default()
                 }
             };
+
+            if let Some(auto_cert_dir) = args.auto_cert_dir {
+                config.auto_cert_dir = Some(auto_cert_dir);
+            }
 
             if let Some(ref l) = args.listen {
                 if quicproxy::realm::is_realm_addr(l) {

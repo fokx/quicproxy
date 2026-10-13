@@ -24,6 +24,9 @@ pub struct ServerConfig {
     pub auto_cert_domain: String,
 
     #[serde(default)]
+    pub auto_cert_dir: Option<PathBuf>,
+
+    #[serde(default)]
     pub masquerade: Option<crate::server::masquerade::MasqueradeConfig>,
 
     #[serde(default)]
@@ -71,6 +74,7 @@ impl Default for ServerConfig {
             tls_key: None,
             auto_cert: default_auto_cert(),
             auto_cert_domain: default_auto_cert_domain(),
+            auto_cert_dir: None,
             masquerade: None,
             anti_probe: None,
             obfuscation: None,
@@ -568,6 +572,21 @@ impl ClientConfig {
             }
             if server.auth_key.is_empty() {
                 anyhow::bail!("Server node '{}' must have an auth_key", server.name);
+            }
+            if server.cert_fingerprint.is_some() {
+                if server.transport == TransportMode::Tcp {
+                    anyhow::bail!(
+                        "Server node '{}': cert_fingerprint cannot be used with transport = 'tcp' because TCP transport does not use TLS certificates",
+                        server.name
+                    );
+                }
+                if server.insecure {
+                    tracing::warn!(
+                        "Server node '{}': cert_fingerprint is specified, disabling 'insecure = true' to enforce fingerprint verification",
+                        server.name
+                    );
+                    server.insecure = false;
+                }
             }
         }
         if let Some(ref relay_target) = self.routing.relay_to_server {
