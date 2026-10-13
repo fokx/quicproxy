@@ -174,6 +174,7 @@ async fn test_multi_server_aggregation_round_robin() {
         socks5_password: None,
         acl: None,
         outbounds: Vec::new(),
+        enable_metrics: false,
     };
 
     tokio::spawn(async move {
@@ -270,6 +271,7 @@ async fn test_multi_server_aggregation_random() {
         socks5_password: None,
         acl: None,
         outbounds: Vec::new(),
+        enable_metrics: false,
     };
 
     tokio::spawn(async move {
@@ -368,6 +370,7 @@ async fn test_multi_server_resilient_failover() {
         socks5_password: None,
         acl: None,
         outbounds: Vec::new(),
+        enable_metrics: false,
     };
 
     tokio::spawn(async move {
@@ -470,6 +473,7 @@ async fn test_multi_server_outbound_relaying() {
         socks5_password: None,
         acl: None,
         outbounds: Vec::new(),
+        enable_metrics: false,
     };
 
     tokio::spawn(async move {

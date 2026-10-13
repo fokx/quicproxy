@@ -155,6 +155,7 @@ async fn test_realm_e2e_direct_hole_punch_and_proxy() {
         socks5_password: None,
         acl: None,
         outbounds: Vec::new(),
+        enable_metrics: false,
     };
 
     tokio::spawn(async move {
@@ -291,6 +292,7 @@ async fn test_realm_with_obfuscation() {
         socks5_password: None,
         acl: None,
         outbounds: Vec::new(),
+        enable_metrics: false,
     };
 
     tokio::spawn(async move {

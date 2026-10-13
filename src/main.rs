@@ -100,6 +100,10 @@ struct ServerArgs {
     /// Path to ACL rule file
     #[arg(long)]
     acl_file: Option<PathBuf>,
+
+    /// Enable periodic metrics logging (default: disabled)
+    #[arg(long, default_value_t = false)]
+    enable_metrics: bool,
 }
 
 #[derive(Args, Debug)]
@@ -179,6 +183,10 @@ struct ClientArgs {
     /// Path to ACL rule file
     #[arg(long)]
     acl_file: Option<PathBuf>,
+
+    /// Enable periodic metrics logging (default: disabled)
+    #[arg(long, default_value_t = false)]
+    enable_metrics: bool,
 }
 
 #[derive(Args, Debug)]
@@ -319,6 +327,10 @@ async fn main() -> Result<()> {
                 });
             }
 
+            if args.enable_metrics {
+                config.enable_metrics = true;
+            }
+
             run_server(config).await?;
         }
         Commands::Client(args) => {
@@ -385,6 +397,7 @@ async fn main() -> Result<()> {
                     socks5_password: args.socks5_password,
                     acl: None,
                     outbounds: Vec::new(),
+                    enable_metrics: args.enable_metrics,
                 }
             };
 
@@ -405,6 +418,10 @@ async fn main() -> Result<()> {
                     file: Some(acl_file),
                     ..Default::default()
                 });
+            }
+
+            if args.enable_metrics {
+                config.enable_metrics = true;
             }
 
             run_client(config).await?;

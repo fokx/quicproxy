@@ -146,7 +146,9 @@ async fn run_realm_server(config: ServerConfig) -> Result<()> {
     println!("================================================================================");
 
     let metrics = Arc::new(crate::metrics::Metrics::new());
-    Arc::clone(&metrics).start_periodic_logging();
+    if config.enable_metrics {
+        Arc::clone(&metrics).start_periodic_logging();
+    }
 
     let auth_key = Arc::new(config.auth_key);
     let masquerade = Arc::new(masquerade::MasqueradeHandler::new(masq_config));
@@ -298,7 +300,9 @@ async fn run_standard_server(config: ServerConfig) -> Result<()> {
     println!("================================================================================");
 
     let metrics = Arc::new(crate::metrics::Metrics::new());
-    Arc::clone(&metrics).start_periodic_logging();
+    if config.enable_metrics {
+        Arc::clone(&metrics).start_periodic_logging();
+    }
 
     let auth_key = Arc::new(config.auth_key);
     let masquerade = Arc::new(masquerade::MasqueradeHandler::new(masq_config));

@@ -46,6 +46,10 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub realm: Option<crate::realm::RealmConfig>,
+
+    /// Enable periodic metrics logging (default: false)
+    #[serde(default)]
+    pub enable_metrics: bool,
 }
 
 fn default_server_listen() -> SocketAddr {
@@ -82,6 +86,7 @@ impl Default for ServerConfig {
             acl: None,
             outbounds: Vec::new(),
             realm: None,
+            enable_metrics: false,
         }
     }
 }
@@ -514,6 +519,10 @@ pub struct ClientConfig {
 
     #[serde(default)]
     pub outbounds: Vec<OutboundConfig>,
+
+    /// Enable periodic metrics logging (default: false)
+    #[serde(default)]
+    pub enable_metrics: bool,
 }
 
 fn default_socks5_listen() -> SocketAddr {
@@ -534,6 +543,7 @@ impl Default for ClientConfig {
             socks5_password: None,
             acl: None,
             outbounds: Vec::new(),
+            enable_metrics: false,
         }
     }
 }
@@ -548,6 +558,7 @@ impl ClientConfig {
             socks5_password: None,
             acl: None,
             outbounds: Vec::new(),
+            enable_metrics: false,
         }
     }
 

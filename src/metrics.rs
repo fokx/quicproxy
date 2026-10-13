@@ -86,8 +86,25 @@ impl Metrics {
         self.datagrams_received.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Returns true if all metrics counters are zero (no activity recorded).
+    pub fn is_empty(&self) -> bool {
+        self.active_tcp_streams.load(Ordering::Relaxed) == 0
+            && self.total_tcp_streams.load(Ordering::Relaxed) == 0
+            && self.active_udp_sessions.load(Ordering::Relaxed) == 0
+            && self.total_udp_sessions.load(Ordering::Relaxed) == 0
+            && self.bytes_sent.load(Ordering::Relaxed) == 0
+            && self.bytes_received.load(Ordering::Relaxed) == 0
+            && self.datagrams_sent.load(Ordering::Relaxed) == 0
+            && self.datagrams_received.load(Ordering::Relaxed) == 0
+    }
+
     /// Log a summary of all metrics at the INFO level using `tracing::info!`.
+    /// Does nothing if all metrics counters are zero.
     pub fn log_summary(&self) {
+        if self.is_empty() {
+            return;
+        }
+
         let active_tcp = self.active_tcp_streams.load(Ordering::Relaxed);
         let total_tcp = self.total_tcp_streams.load(Ordering::Relaxed);
         let active_udp = self.active_udp_sessions.load(Ordering::Relaxed);
@@ -198,10 +215,27 @@ mod tests {
     #[test]
     fn test_log_summary() {
         let metrics = Metrics::new();
+        // Logging while empty returns immediately without logging
+        assert!(metrics.is_empty());
+        metrics.log_summary();
+
         metrics.inc_active_tcp_streams();
         metrics.add_bytes_sent(512);
-        // Should execute without panicking
+        assert!(!metrics.is_empty());
+        // Should execute with data without panicking
         metrics.log_summary();
+    }
+
+    #[test]
+    fn test_metrics_is_empty() {
+        let metrics = Metrics::new();
+        assert!(metrics.is_empty());
+
+        metrics.inc_active_tcp_streams();
+        assert!(!metrics.is_empty());
+        metrics.dec_active_tcp_streams();
+        // Note: total_tcp_streams is now 1, so not empty
+        assert!(!metrics.is_empty());
     }
 
     #[tokio::test]

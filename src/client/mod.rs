@@ -19,7 +19,9 @@ pub async fn run_client(mut config: ClientConfig) -> Result<()> {
     router.start_connection_managers(&config.servers);
 
     let metrics = Arc::new(crate::metrics::Metrics::new());
-    Arc::clone(&metrics).start_periodic_logging();
+    if config.enable_metrics {
+        Arc::clone(&metrics).start_periodic_logging();
+    }
 
     println!("================================================================================");
     println!("  QuicProxy Multi-Server Client is starting...");
