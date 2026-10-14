@@ -565,6 +565,16 @@ priority = 1
 
 ---
 
+## Android Client Support
+
+For Android devices, you can use our customized fork of [NekoBoxForAndroid](https://github.com/fokx/NekoBoxForAndroid):
+
+- **Repository**: [https://github.com/fokx/NekoBoxForAndroid](https://github.com/fokx/NekoBoxForAndroid)
+- **Features**: Complete Android GUI and VPN-service integration, routing rules, subscription management, and native high-speed core built for mobile devices.
+- **Build from source**: Refer to the build & signing instructions in the [repository's README](https://github.com/fokx/NekoBoxForAndroid#readme) to compile and self-sign a release APK for your target architecture (e.g., `arm64-v8a` via `./gradlew app:assembleOssRelease`).
+- **Install**: Note own release build is incompatible with the original one due to signing, you have to back up config and uninstall it before installing.
+---
+
 ## License
 
 Licensed under the Apache License, Version 2.0 (the "License");
